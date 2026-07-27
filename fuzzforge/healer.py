@@ -12,9 +12,20 @@ from typing import Any
 
 from fuzzforge.runner import run_gradle, diagnose_failure
 
-SF_API_KEY = "sk-Pk7QmA5r3a0pu2sOB3sB7sE3EeFrFpCj"
-SF_BASE_URL = "https://api.sfkey.cn/v1"
-SF_MODEL = "glm-5.2"
+# Read LLM config from Hermes config
+def _load_sf_config():
+    import yaml
+    with open(os.path.expanduser("~/.hermes/config.yaml")) as f:
+        cfg = yaml.safe_load(f)
+    # Try custom_providers first
+    for prov in cfg.get("custom_providers", []):
+        if prov.get("name") == "sf":
+            return prov.get("api_key"), prov.get("base_url", "https://api.sfkey.cn/v1"), prov.get("model", "glm-5.2")
+    # Fallback to model config
+    m = cfg.get("model", {})
+    return m.get("api_key"), m.get("base_url", "https://api.sfkey.cn/v1"), m.get("default", "glm-5.2")
+
+SF_API_KEY, SF_BASE_URL, SF_MODEL = _load_sf_config()
 
 
 def call_llm_for_fix(prompt: str) -> str:
