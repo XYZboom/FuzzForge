@@ -1,0 +1,32 @@
+# Template for computation-graph IR fuzzer
+# Used when the target is an AI compiler / dataflow system / tensor framework
+
+IR_MODE: computation_graph
+TREE_BUILDER_PATTERN: |
+  The IR follows the Program -> Graph -> Node -> ValueRef pattern.
+  Each node has an op, inputs, outputs, and attributes.
+  The type system includes TensorType, Shape, Dim, and DataType.
+
+ENUMS:
+  op_kind: [ADD, SUBTRACT, MULTIPLY, DIVIDE, RELU, SIGMOID, TANH, GELU, SILU, CONV2D, MAX_POOL2D, AVG_POOL2D, RESHAPE, TRANSPOSE, CONCAT, REDUCE_SUM, REDUCE_MEAN, SOFTMAX, BATCH_NORM, LAYER_NORM]
+  type_kind: [TENSOR, SEQUENCE, TUPLE, SCALAR, DYNAMIC]
+  dim_kind: [CONSTANT, SYMBOLIC, UNKNOWN]
+  attr_kind: [INT, FLOAT, STRING, BOOL, INT_LIST, FLOAT_LIST]
+
+GENERATOR_CONFIG:
+  min_nodes_per_graph: 3
+  max_nodes_per_graph: 12
+  min_inputs: 1
+  max_inputs: 4
+  shape_tier: tiny
+  avoid_nan_inf: true
+  avoid_extreme_ops: true
+
+TRANSLATOR_TARGETS:
+  - target_backend_python
+
+DIFF_TEST_MODES:
+  - cross_target
+  - optimize_vs_unoptimized
+
+HAS_PATTERN_DEDUP: true

@@ -1,0 +1,5 @@
+# FuzzForge runtime dependencies (minimal)
+# No external deps required for core functionality.
+# Optional:
+# pyyaml>=6.0  # for YAML config loading
+# openai>=1.0  # for OpenAI provider

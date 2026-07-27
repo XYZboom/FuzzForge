@@ -1,0 +1,266 @@
+"""FuzzForge: IR designer — uses LLM to design the IR data structure from embedded knowledge."""
+
+import json
+import os
+import subprocess
+import sys
+from typing import Any
+
+from fuzzforge.knowledge import build_knowledge_context, UNIVERSAL_DESIGN_PRINCIPLES
+
+
+def build_ir_design_prompt(target: str, mode: str = "computation_graph") -> str:
+    """Build the full prompt for IR design using embedded knowledge."""
+    knowledge_ctx = build_knowledge_context(mode)
+
+    prompt = f"""You are a fuzzer IR architect. Design a Kotlin IR data structure for a fuzzer targeting: {target}.
+
+The IR must be implementable using Kotlin's `tree-generator-common` library, which uses an `AbstractElementConfigurator` pattern to auto-generate Visitor, Transformer, and Builder classes.
+
+Below is embedded design knowledge distilled from production fuzzer implementations:
+
+{knowledge_ctx}
+
+Now design the complete IR structure for the target. Output valid JSON only, with this exact schema:
+
+{{
+  "project_name": "string — short name like 'tvm-fuzzer'",
+  "description": "string — one-line description",
+  "ir_mode": "{mode}",
+  "tree_builder_elements": [
+    {{
+      "var_name": "string — e.g. 'program', 'graph', 'node'",
+      "element_name": "string — e.g. 'Program', 'Graph', 'Node'",
+      "kind": "Other" | "Type" | "Declaration" | "Expression" | "Container",
+      "parent": "string | null — parent var_name or null",
+      "interface_kind": "Interface" | "AbstractClass" | "SealedInterface" | null,
+      "fields": [
+        {{
+          "name": "string",
+          "type": "string — e.g. 'String', 'Int', 'OpKind', 'List<Node>'",
+          "is_child": true | false,
+          "nullable": true | false,
+          "is_mutable": true | false,
+          "with_transform": true | false,
+          "with_replace": true | false,
+          "list_base_type": "string | null — if type is List<X>, set this to X"
+        }}
+      ]
+    }}
+  ],
+  "enums": {{
+    "op_kind": ["string", "string", ...],
+    "type_kind": ["string", "string", ...],
+    "attr_kind": ["string", "string", ...],
+    "dim_kind": ["string", "string", ...],
+    "block_kind": ["string", "string", ...]
+  }},
+  "generator_config": {{
+    "fields": [
+      {{
+        "name": "string",
+        "type": "string",
+        "default_value": "string or number",
+        "description": "string"
+      }}
+    ]
+  }},
+  "translator_targets": ["string — e.g. 'tvm_relax_python'"],
+  "diff_test_modes": ["string — e.g. 'cross_target'"],
+  "has_pattern_dedup": true | false,
+  "requires_reducer": true | false
+}}
+
+IMPORTANT RULES:
+1. The root element must be named "Element" with hasAcceptChildren=true and hasTransformChildren=true.
+2. Fields with `is_child: false` are value properties (not visited by Visitor/Transformer).
+3. Fields with `is_child: true` are child elements (visited recursively).
+4. List fields use `list_base_type` to specify the element type.
+5. Enum fields (like OpKind, TypeKind) must have `is_child: false`.
+6. Keep the IR minimal — only include elements the target actually needs.
+7. Use parent references to model inheritance (e.g. TensorType parent=Type).
+8. The output must be parseable JSON with no markdown fences or extra text.
+"""
+
+    return prompt
+
+
+def call_llm_for_design(prompt: str, provider: str = "auto") -> dict[str, Any]:
+    """Call an LLM to generate the IR design JSON.
+
+    Supports:
+    - "auto": Try ollama, then fallback to custom command
+    - "ollama": Local ollama instance
+    - "openai": OpenAI-compatible API
+    - "custom": Use a custom command from environment variable
+    """
+    provider = os.environ.get("FUZZFORGE_LLM_PROVIDER", provider)
+
+    if provider == "ollama":
+        return _call_ollama(prompt)
+    elif provider == "openai":
+        return _call_openai(prompt)
+    elif provider == "auto":
+        try:
+            return _call_ollama(prompt)
+        except (FileNotFoundError, subprocess.CalledProcessError, ConnectionError):
+            pass
+        cmd = os.environ.get("FUZZFORGE_LLM_CMD")
+        if cmd:
+            return _call_custom(prompt, cmd)
+        raise RuntimeError(
+            "No LLM provider available. Set FUZZFORGE_LLM_PROVIDER or FUZZFORGE_LLM_CMD"
+        )
+    else:
+        raise ValueError(f"Unknown provider: {provider}")
+
+
+def _call_ollama(prompt: str) -> dict[str, Any]:
+    """Call a local ollama instance."""
+    model = os.environ.get("FUZZFORGE_LLM_MODEL", "llama3.2")
+    host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+    import urllib.request
+
+    data = json.dumps({
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+        "format": "json",
+    }).encode()
+
+    req = urllib.request.Request(
+        f"{host}/api/generate",
+        data=data,
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urllib.request.urlopen(req, timeout=300) as resp:
+        result = json.loads(resp.read().decode())
+        raw = result.get("response", "")
+        return _parse_llm_json(raw)
+
+
+def _call_openai(prompt: str) -> dict[str, Any]:
+    """Call an OpenAI-compatible API."""
+    api_key = os.environ.get("OPENAI_API_KEY", "")
+    model = os.environ.get("FUZZFORGE_LLM_MODEL", "gpt-4o")
+    base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    import urllib.request
+
+    data = json.dumps({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "You are a fuzzer IR architect. Output only valid JSON."},
+            {"role": "user", "content": prompt},
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": 0.3,
+    }).encode()
+
+    req = urllib.request.Request(
+        f"{base_url}/chat/completions",
+        data=data,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+    )
+
+    with urllib.request.urlopen(req, timeout=300) as resp:
+        result = json.loads(resp.read().decode())
+        raw = result["choices"][0]["message"]["content"]
+        return _parse_llm_json(raw)
+
+
+def _call_custom(prompt: str, cmd: str) -> dict[str, Any]:
+    """Call a custom LLM command. Accepts prompt on stdin, returns JSON on stdout."""
+    proc = subprocess.run(
+        cmd.split(),
+        input=prompt,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"Custom LLM command failed: {proc.stderr}")
+    return _parse_llm_json(proc.stdout)
+
+
+def _parse_llm_json(raw: str) -> dict[str, Any]:
+    """Parse LLM output, stripping markdown fences if present."""
+    raw = raw.strip()
+    if raw.startswith("```"):
+        lines = raw.split("\n")
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        raw = "\n".join(lines)
+
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start >= 0 and end > start:
+        raw = raw[start: end + 1]
+
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Failed to parse LLM JSON output: {e}\nRaw: {raw[:500]}")
+
+
+def validate_ir_design(design: dict[str, Any]) -> list[str]:
+    """Validate the IR design structure. Returns a list of errors (empty = valid)."""
+    errors = []
+
+    if "tree_builder_elements" not in design:
+        errors.append("Missing 'tree_builder_elements'")
+    else:
+        elements = design["tree_builder_elements"]
+        names = [e["var_name"] for e in elements]
+        if "element" not in names:
+            errors.append("Root element 'Element' not found")
+
+        for e in elements:
+            parent = e.get("parent")
+            if parent and parent not in names:
+                errors.append(f"Element '{e['var_name']}' references unknown parent '{parent}'")
+
+    if "enums" not in design:
+        errors.append("Missing 'enums' section")
+    else:
+        for enum_name in ["op_kind", "type_kind"]:
+            if enum_name not in design["enums"]:
+                errors.append(f"Missing enum '{enum_name}'")
+
+    if "generator_config" not in design:
+        errors.append("Missing 'generator_config'")
+
+    if "translator_targets" not in design:
+        errors.append("Missing 'translator_targets'")
+
+    return errors
+
+
+def design_ir(
+    target: str,
+    provider: str = "auto",
+    mode: str = "computation_graph",
+) -> dict[str, Any]:
+    """Design the IR structure for a target using LLM + embedded knowledge.
+
+    Returns the validated IR design dict.
+    """
+    print(f"  Designing IR for target: {target} (mode: {mode})")
+
+    prompt = build_ir_design_prompt(target, mode)
+    design = call_llm_for_design(prompt, provider)
+
+    errors = validate_ir_design(design)
+    if errors:
+        print(f"  WARNING: IR design validation found {len(errors)} issues:")
+        for e in errors:
+            print(f"    - {e}")
+
+    print(f"  IR design complete: {design.get('project_name', 'unnamed')} "
+          f"({design.get('ir_mode', 'unknown')} mode)")
+    return design

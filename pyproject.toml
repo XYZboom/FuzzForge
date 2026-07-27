@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "fuzzforge"
+version = "0.1.0"
+description = "Autonomous Fuzzer Code Generation Agent"
+authors = [
+    {name = "FuzzForge"},
+]
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+fuzzforge = "fuzzforge.forge:main"

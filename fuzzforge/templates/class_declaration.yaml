@@ -1,0 +1,29 @@
+# Template for class-declaration IR fuzzer
+# Used when the target is a language compiler / type system
+
+IR_MODE: class_declaration
+TREE_BUILDER_PATTERN: |
+  The IR follows the Program -> ClassDeclaration -> FunctionDeclaration pattern.
+  ClassDeclarations have superType, implementedTypes, typeParameters, and members.
+  FunctionDeclarations have parameters, returnType, and optional body.
+  The type system includes parameterized types, nullable types, and platform types.
+
+ENUMS:
+  class_kind: [ABSTRACT, INTERFACE, OPEN, FINAL, SEALED, DATA]
+  language: [KOTLIN, JAVA, SCALA, GROOVY4, GROOVY5]
+
+GENERATOR_CONFIG:
+  top_level_decl_range: 8..15
+  class_member_num_range: 1..3
+  class_has_super_probability: 0.3
+  function_parameter_num_range: 0..3
+  type_parameter_upperbound_always_any: false
+
+TRANSLATOR_TARGETS:
+  - kotlin_source
+  - java_source
+
+DIFF_TEST_MODES:
+  - cross_language
+
+HAS_PATTERN_DEDUP: false
