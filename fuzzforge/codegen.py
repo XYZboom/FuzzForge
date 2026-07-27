@@ -296,7 +296,7 @@ def _gen_generator_config(design: dict[str, Any], pkg: str) -> str:
     fields = design.get("generator_config", {}).get("fields", [])
     field_lines = []
     for f in fields:
-        field_lines.append(f"    val {f['name']}: {f['type']} = {f.get('default_value', '')}")
+        field_lines.append(f"    val {f['name']}: {f['type']} = {f.get('default_value', '')},")
     return f"""\
 {_pkg([pkg, "generator"])}
 
