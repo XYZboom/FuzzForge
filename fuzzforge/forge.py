@@ -28,13 +28,14 @@ class FuzzForge:
         mode: str = "computation_graph",
         provider: str | None = None,
         skip_build: bool = False,
+        auto_fix: bool = False,
     ) -> dict[str, Any]:
         """Full workflow: design IR -> generate project -> optionally build.
 
-        Returns a result dict with status and metadata.
+        With auto_fix=True, the healer loop autonomously fixes build errors.
         """
         provider = provider or self.provider
-        steps = 3 if not skip_build else 2
+        steps = 4 if auto_fix else (3 if not skip_build else 2)
         step = 0
 
         # Step 1: Design IR
@@ -59,7 +60,17 @@ class FuzzForge:
         print(f"  Project generated at: {self.output_dir}")
         self._print_project_summary()
 
-        # Step 3: Build (optional)
+        # Step 3: Generate tree (must run before compile)
+        step += 1
+        print_header(f"Step {step}/{steps}: Generate IR Tree Sources")
+        print_step(step, steps, "Running gradle generateTree...")
+        tree_result = self._run_with_harness(":tree:generateTree", self.output_dir)
+        if tree_result["success"]:
+            print(f"  Tree generation succeeded in {tree_result['elapsed_seconds']}s!")
+        else:
+            print(f"  Tree generation may need the tree-generator-common.jar in libs/")
+
+        # Step 4: Build (optional)
         if not skip_build:
             step += 1
             print_header(f"Step {step}/{steps}: Build Project")
@@ -70,11 +81,24 @@ class FuzzForge:
                 print(f"  Build succeeded in {result['elapsed_seconds']}s!")
             else:
                 print(f"  Build failed in {result['elapsed_seconds']}s (exit code {result['return_code']})")
-                issues = diagnose_failure(result)
-                print(f"  Issues found:")
-                for issue in issues:
-                    print(f"    - {issue}")
-                print(f"  !!! BUILD FAILED — review stderr above and fix manually !!!")
+
+                if auto_fix:
+                    print(f"  Auto-fix enabled! Starting healer loop...")
+                    llm_cmd = os.environ.get("FUZZFORGE_LLM_CMD", "")
+                    if llm_cmd:
+                        from fuzzforge.healer import fix_and_rebuild
+                        heal_result = fix_and_rebuild(
+                            self.output_dir, self.design, llm_cmd, max_iterations=5,
+                        )
+                        result = heal_result.get("build_result", result)
+                    else:
+                        print(f"  FUZZFORGE_LLM_CMD not set — cannot auto-fix")
+                else:
+                    issues = diagnose_failure(result)
+                    print(f"  Issues found:")
+                    for issue in issues:
+                        print(f"    - {issue}")
+                    print(f"  !!! BUILD FAILED — review stderr above and fix manually !!!")
 
             return {
                 "status": "built" if result["success"] else "build_failed",
@@ -88,6 +112,41 @@ class FuzzForge:
             "output_dir": self.output_dir,
             "design": self.design,
         }
+
+    def _run_with_harness(self, task: str, project_dir: str, timeout: int = 300) -> dict:
+        """Run a gradle task, copying jar and wrapper from known sources."""
+        libs_dir = Path(project_dir) / "libs"
+        jar_path = libs_dir / "tree-generator-common.jar"
+
+        wrapper_src = Path("/root/Code/kotlin/aifuzzer")
+        wrapper_files = [
+            "gradlew", "gradlew.bat",
+            "gradle/wrapper/gradle-wrapper.jar",
+            "gradle/wrapper/gradle-wrapper.properties",
+        ]
+        for wf in wrapper_files:
+            src = wrapper_src / wf
+            dst = Path(project_dir) / wf
+            if src.exists() and not dst.exists():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                import shutil
+                shutil.copy(str(src), str(dst))
+                if wf == "gradlew":
+                    dst.chmod(0o755)
+
+        if not jar_path.exists():
+            candidates = [
+                Path("/root/Code/kotlin/aifuzzer/libs/tree-generator-common.jar"),
+            ]
+            for c in candidates:
+                if c.exists():
+                    libs_dir.mkdir(parents=True, exist_ok=True)
+                    import shutil
+                    shutil.copy(str(c), str(jar_path))
+                    print(f"  Copied tree-generator-common.jar")
+                    break
+
+        return run_gradle(project_dir, task, timeout)
 
     def run(
         self,
@@ -167,6 +226,7 @@ Examples:
                               help="IR mode: computation_graph (AI compilers) or class_declaration (language compilers)")
     create_parser.add_argument("--provider", "-p", default="auto", help="LLM provider (auto, ollama, openai)")
     create_parser.add_argument("--skip-build", action="store_true", help="Skip gradle build step")
+    create_parser.add_argument("--auto-fix", action="store_true", help="Auto-fix build errors with LLM healer loop")
 
     # run
     run_parser = subparsers.add_parser("run", help="Run a generated fuzzer")
@@ -197,6 +257,7 @@ Examples:
             mode=args.mode,
             provider=args.provider,
             skip_build=args.skip_build,
+            auto_fix=args.auto_fix,
         )
         print(f"\n  Done! Status: {result['status']}")
         print(f"  Project: {result['output_dir']}")
