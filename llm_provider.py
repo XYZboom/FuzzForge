@@ -32,6 +32,22 @@ if mode == "fix":
 
     patches = []
 
+    # Step 0: Fix missing package declarations
+    for fp, content in files.items():
+        if fp.endswith(".kt") and not content.startswith("package") and not content.startswith("//"):
+            lines = content.split("\n")
+            if lines and lines[0] and "import" in lines[0]:
+                path_parts = fp.replace("\\", "/").split("/")
+                if "com/fuzzforge" in fp:
+                    idx = path_parts.index("com")
+                    pkg = ".".join(path_parts[idx:idx + 3]) + "." + ".".join(path_parts[idx + 3:-1])
+                    pkg = pkg.rstrip(".")
+                    patches.append({
+                        "file_path": fp,
+                        "old_string": lines[0],
+                        "new_string": f"package {pkg}\n\n{lines[0]}"
+                    })
+
     # Step 1: Detect Uir prefix from generated files
     # All generated types use "Uir" prefix (UirProgram, UirNode, etc.)
     # Business code uses non-prefixed names (Program, Node, etc.)
