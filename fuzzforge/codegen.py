@@ -296,8 +296,7 @@ def _gen_generator_config(design: dict[str, Any], pkg: str) -> str:
     fields = design.get("generator_config", {}).get("fields", [])
     field_lines = []
     for f in fields:
-        desc = f.get("description", "")
-        field_lines.append(f"    val {f['name']}: {f['type']} = {f.get('default_value', '')}    // {desc}")
+        field_lines.append(f"    val {f['name']}: {f['type']} = {f.get('default_value', '')}")
     return f"""\
 {_pkg([pkg, "generator"])}
 
@@ -324,8 +323,7 @@ def _gen_generator(design: dict[str, Any], pkg: str) -> str:
 
 import kotlin.random.Random
 import com.fuzzforge.ir.UirProgram
-import com.fuzzforge.ir.impl.UirProgramImpl
-import com.fuzzforge.ir.builder.buildUirProgram
+import com.fuzzforge.ir.builder.buildProgram
 
 class {cn}(
     private val config: GeneratorConfig = GeneratorConfig.default,
@@ -333,7 +331,7 @@ class {cn}(
     private val random: Random = Random.Default
 
     fun generate(): UirProgram {{
-        return buildUirProgram()
+        return buildProgram()
     }}
 }}
 """
