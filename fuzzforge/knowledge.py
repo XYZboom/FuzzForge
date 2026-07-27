@@ -623,8 +623,12 @@ def build_knowledge_context(mode: str) -> str:
     lines.append("")
     lines.append("### Translator Strategy")
     lines.append(knowledge["translator_pattern"]["strategy"])
-    for t in knowledge["translator_pattern"]["key_techniques"]:
-        lines.append(f"- {t}")
+    if "key_techniques" in knowledge["translator_pattern"]:
+        for t in knowledge["translator_pattern"]["key_techniques"]:
+            lines.append(f"- {t}")
+    if "language_specific_notes" in knowledge["translator_pattern"]:
+        for t in knowledge["translator_pattern"]["language_specific_notes"]:
+            lines.append(f"- {t}")
 
     if "differential_testing_modes" in knowledge:
         lines.append("")
