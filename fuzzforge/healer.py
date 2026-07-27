@@ -86,7 +86,7 @@ def build_fix_prompt(
     stderr: str,
     stdout: str,
     design: dict[str, Any],
-    max_files: int = 12,
+    max_files: int = 8,
 ) -> str:
     """Build a comprehensive fix prompt with error context and relevant source files."""
     lines = []
@@ -104,12 +104,13 @@ def build_fix_prompt(
 
     patterns = [
         "**/cli/App.kt", "**/generator/*.kt", "**/translator/*.kt",
-        "**/runner/*.kt", "**/config/*.kt", "**/build.gradle.kts",
-        "**/settings.gradle.kts",
+        "**/TreeBuilder.kt",
+        "**/tree-generator/src/**/main.kt",
+        "**/tree-generator/src/**/types.kt",
+        "**/tree-generator/src/**/model/Element.kt",
         "**/ir/OpKind.kt", "**/ir/TypeKind.kt",
         "**/ir/ClassKind.kt", "**/ir/Language.kt",
-        "**/TreeBuilder.kt",
-        "**/tree-gen/**/*.kt",
+        "**/build.gradle.kts",
     ]
 
     seen = set()
@@ -147,6 +148,9 @@ def parse_fix_response(raw: str) -> list[dict[str, str]]:
         if lines and lines[-1].strip().startswith("```"):
             lines = lines[:-1]
         raw = "\n".join(lines)
+
+    # Try to find complete JSON array — handle truncated responses
+    # Find the last complete patch object
     try:
         patches = json.loads(raw)
         if isinstance(patches, dict):
@@ -158,6 +162,24 @@ def parse_fix_response(raw: str) -> list[dict[str, str]]:
             return []
         return patches
     except json.JSONDecodeError:
+        # Try to find the last complete object before truncation
+        # Find the innermost complete bracket
+        depth = 0
+        last_complete = -1
+        for i, ch in enumerate(raw):
+            if ch == '[':
+                depth += 1
+            elif ch == ']':
+                depth -= 1
+                if depth == 0:
+                    last_complete = i + 1
+        if last_complete > 0:
+            try:
+                patches = json.loads(raw[:last_complete])
+                if isinstance(patches, list):
+                    return patches
+            except json.JSONDecodeError:
+                pass
         return []
 
 
@@ -174,11 +196,6 @@ def apply_patches(project_dir: str, patches: list[dict[str, str]]) -> list[str]:
             continue
 
         full_path = base / file_path
-
-        # Reject patches to auto-generated tree/gen files
-        if "tree/gen" in file_path:
-            applied.append(f"REJECTED {file_path} — auto-generated file, DO NOT EDIT")
-            continue
 
         # Reject file creation/deletion — the LLM should not do this
         if old_str in ("__FILE_MISSING__", "__FILE_DELETE__"):
