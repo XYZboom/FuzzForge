@@ -103,7 +103,7 @@ def call_llm_for_design(prompt: str, provider: str = "auto") -> dict[str, Any]:
     elif provider == "auto":
         try:
             return _call_ollama(prompt)
-        except (FileNotFoundError, subprocess.CalledProcessError, ConnectionError):
+        except Exception:
             pass
         cmd = os.environ.get("FUZZFORGE_LLM_CMD")
         if cmd:
