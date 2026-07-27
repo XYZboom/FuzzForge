@@ -84,15 +84,11 @@ class FuzzForge:
 
                 if auto_fix:
                     print(f"  Auto-fix enabled! Starting healer loop...")
-                    llm_cmd = os.environ.get("FUZZFORGE_LLM_CMD", "")
-                    if llm_cmd:
-                        from fuzzforge.healer import fix_and_rebuild
-                        heal_result = fix_and_rebuild(
-                            self.output_dir, self.design, llm_cmd, max_iterations=5,
-                        )
-                        result = heal_result.get("build_result", result)
-                    else:
-                        print(f"  FUZZFORGE_LLM_CMD not set — cannot auto-fix")
+                    from fuzzforge.healer import fix_and_rebuild
+                    heal_result = fix_and_rebuild(
+                        self.output_dir, self.design, max_iterations=5,
+                    )
+                    result = heal_result.get("build_result", result)
                 else:
                     issues = diagnose_failure(result)
                     print(f"  Issues found:")
