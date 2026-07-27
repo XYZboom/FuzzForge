@@ -271,6 +271,27 @@ def setup_tree_infrastructure(output_dir: str, design: dict[str, Any]) -> bool:
     dirs = _copy_boilerplate(output_dir)
     base = Path(output_dir)
 
+    # Copy gradle wrapper from aiFuzzer
+    wrapper_src = Path("/root/Code/kotlin/aifuzzer")
+    for wf in ["gradlew", "gradlew.bat",
+               "gradle/wrapper/gradle-wrapper.jar",
+               "gradle/wrapper/gradle-wrapper.properties"]:
+        src = wrapper_src / wf
+        dst = base / wf
+        if src.exists() and not dst.exists():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(str(src), str(dst))
+            if wf == "gradlew":
+                dst.chmod(0o755)
+
+    # Copy tree-generator-common.jar
+    libs_dir = base / "libs"
+    jar_src = Path("/root/Code/kotlin/aifuzzer/libs/tree-generator-common.jar")
+    if jar_src.exists() and not (libs_dir / "tree-generator-common.jar").exists():
+        libs_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy(str(jar_src), str(libs_dir / "tree-generator-common.jar"))
+        print(f"  [TreeGen] Copied tree-generator-common.jar")
+
     # ImplConfigurator + BuilderConfigurator
     Path(dirs["tree_generator"]).joinpath("ImplConfigurator.kt").write_text(
         _gen_impl_configurator(elements))
