@@ -136,7 +136,10 @@ import com.fuzzforge.tree.generator.model.ListField
 import com.fuzzforge.tree.generator.model.SimpleField
 import org.jetbrains.kotlin.generators.tree.ImplementationKind
 import org.jetbrains.kotlin.generators.tree.StandardTypes
+import org.jetbrains.kotlin.generators.tree.TypeRef
+import org.jetbrains.kotlin.generators.tree.TypeRefWithNullability
 import org.jetbrains.kotlin.generators.tree.config.AbstractElementConfigurator
+import org.jetbrains.kotlin.generators.tree.withArgs
 """
 
     return f"""\
