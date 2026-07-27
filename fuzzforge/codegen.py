@@ -1,135 +1,227 @@
-"""FuzzForge: code generation engine — generates Kotlin source from IR design."""
+"""
+FuzzForge: code generation engine — generates Kotlin source from IR design.
+
+Architecture follows a 3-phase model (inspired by WhiteFox):
+  Phase 1 (Planning): IR design → JSON
+  Phase 2 (Generation): IR design + templates → Kotlin project (this module)
+  Phase 3 (Feedback): Build errors → LLM patches → rebuild (healer.py)
+"""
 
 import os
+import re
+import shutil
 from pathlib import Path
 from typing import Any
 
 from fuzzforge.scaffold import create_project_scaffold
 
-# ---------------------------------------------------------------------------
-# Helper: build Kotlin package line
-# ---------------------------------------------------------------------------
 
 def _pkg(parts: list[str]) -> str:
     return "package " + ".".join(parts)
 
 
 # ---------------------------------------------------------------------------
-# 1. Enums
+# Phase 2a: Copy tree-generator boilerplate (from aiFuzzer, verified working)
 # ---------------------------------------------------------------------------
 
-def _gen_enum(enum_name: str, values: list[str], pkg: str) -> str:
-    body = ",\n    ".join(values)
-    return f"""\
-{_pkg([pkg])}
+def _copy_tree_generator_boilerplate(output_dir: str) -> None:
+    """Copy the tree-generator boilerplate from aiFuzzer.
 
-enum class {enum_name} {{
-    {body}
+    These files are verified to work with the tree-generator-common.jar we have.
+    We only change the package name and enum type names.
+    """
+    base = Path(output_dir)
+
+    # license directory (needed by tree-generator-common.jar)
+    license_src = Path("/root/Code/kotlin/aifuzzer/license")
+    license_dst = base / "license"
+    if license_src.exists() and not license_dst.exists():
+        shutil.copytree(str(license_src), str(license_dst))
+
+    # tree-generator source
+    tgen_src = Path("/root/Code/kotlin/aifuzzer/tree/tree-generator/src/main/kotlin/io/github/xyzboom/aiFuzzer/tree/generator")
+    tgen_dst = base / "tree" / "tree-generator" / "src" / "main" / "kotlin" / "com" / "fuzzforge" / "tree" / "generator"
+    if tgen_src.exists():
+        if tgen_dst.exists():
+            shutil.rmtree(tgen_dst)
+        shutil.copytree(str(tgen_src), str(tgen_dst))
+        for f in tgen_dst.rglob("*.kt"):
+            content = f.read_text()
+            content = content.replace("io.github.xyzboom.aiFuzzer", "com.fuzzforge")
+            content = content.replace("UirTypeKind", "TypeKind")
+            content = content.replace("UirDimKind", "DimKind")
+            content = content.replace("UirAttrKind", "AttrKind")
+            content = content.replace("UirBlockKind", "BlockKind")
+            content = content.replace("UirOpKind", "OpKind")
+            f.write_text(content)
+
+    # ir support files
+    ir_src = Path("/root/Code/kotlin/aifuzzer/tree/src/io/github/xyzboom/aiFuzzer/ir")
+    ir_dst = base / "tree" / "src" / "main" / "kotlin" / "com" / "fuzzforge" / "ir"
+    for fname in ["visitors/transformInplace.kt", "builder/BuilderDsl.kt", "UirPureAbstractElement.kt"]:
+        src = ir_src / fname
+        dst = ir_dst / fname
+        if src.exists():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            content = src.read_text()
+            content = content.replace("io.github.xyzboom.aiFuzzer", "com.fuzzforge")
+            dst.write_text(content)
+
+    # IrImplementationDetail marker
+    (ir_dst / "IrImplementationDetail.kt").write_text("""package com.fuzzforge.ir
+
+@RequiresOptIn(message = "This is an implementation detail of the FuzzForge IR tree")
+@Retention(AnnotationRetention.BINARY)
+@Target(AnnotationTarget.CLASS, AnnotationTarget.FUNCTION)
+annotation class IrImplementationDetail
+""")
+
+
+# ---------------------------------------------------------------------------
+# Phase 2b: Generate ImplConfigurator + BuilderConfigurator from design
+# ---------------------------------------------------------------------------
+
+def _gen_impl_configurator(elements: list[dict]) -> str:
+    names = [e["var_name"] for e in elements if e["var_name"] not in ("element", "rootElement")]
+    impl_lines = "\n".join(f"        impl({name})" for name in names)
+    return f"""package com.fuzzforge.tree.generator
+
+import com.fuzzforge.tree.generator.model.Element
+import com.fuzzforge.tree.generator.model.Field
+import com.fuzzforge.tree.generator.model.Implementation
+import org.jetbrains.kotlin.generators.tree.Model
+import org.jetbrains.kotlin.generators.tree.config.AbstractImplementationConfigurator
+
+object ImplConfigurator : AbstractImplementationConfigurator<Implementation, Element, Field>() {{
+    override fun createImplementation(element: Element, name: String?): Implementation =
+        Implementation(element, name)
+
+    override fun configure(model: Model<Element>) = with(TreeBuilder) {{
+{impl_lines}
+        Unit
+    }}
+
+    override fun configureAllImplementations(model: Model<Element>) {{ }}
+}}
+"""
+
+
+def _gen_builder_configurator(elements: list[dict]) -> str:
+    names = [e["var_name"] for e in elements if e["var_name"] not in ("element", "rootElement")]
+    builder_lines = "\n".join(f"        builder({name}) {{ }}" for name in names)
+    return f"""package com.fuzzforge.tree.generator
+
+import com.fuzzforge.tree.generator.model.Element
+import com.fuzzforge.tree.generator.model.Field
+import com.fuzzforge.tree.generator.model.Implementation
+import org.jetbrains.kotlin.generators.tree.config.AbstractBuilderConfigurator
+
+class BuilderConfigurator(model: org.jetbrains.kotlin.generators.tree.Model<Element>) :
+    AbstractBuilderConfigurator<Element, Implementation, Field>(model) {{
+
+    override val namePrefix: String get() = "Uir"
+    override val defaultBuilderPackage: String get() = "com.fuzzforge.ir.builder"
+
+    override fun configureBuilders() = with(TreeBuilder) {{
+{builder_lines}
+    }}
 }}
 """
 
 
 # ---------------------------------------------------------------------------
-# 2. TreeBuilder.kt
+# Enums
 # ---------------------------------------------------------------------------
 
-def _gen_tree_builder(design: dict[str, Any], pkg: str) -> str:
+def _gen_enum(enum_name: str, values: list[str], pkg: str) -> str:
+    sep = ",\n    "
+    return f"""\
+{_pkg([pkg])}
+
+enum class {enum_name} {{
+    {sep.join(values)}
+}}
+"""
+
+
+# ---------------------------------------------------------------------------
+# TreeBuilder.kt
+# ---------------------------------------------------------------------------
+
+ENUM_VAR_MAP = {
+    "OpKind": "opKindType", "TypeKind": "typeKindType",
+    "AttrKind": "attrKindType", "DimKind": "dimKindType",
+    "BlockKind": "blockKindType", "ClassKind": "classKindType",
+    "Language": "languageType",
+}
+
+def _map_type_ref(ftype: str) -> str:
+    if ftype in ("String", "Int", "Boolean", "Long", "Float"):
+        return {"String": "StandardTypes.string", "Int": "StandardTypes.int",
+                "Boolean": "StandardTypes.boolean", "Long": "StandardTypes.long",
+                "Float": "StandardTypes.float"}[ftype]
+    if ftype in ENUM_VAR_MAP:
+        return ENUM_VAR_MAP[ftype]
+    return ftype[0].lower() + ftype[1:] + "Type"
+
+
+def _gen_tree_builder(design: dict[str, Any]) -> str:
     elements = design.get("tree_builder_elements", [])
     enums = design.get("enums", {})
+    enum_var_map = ENUM_VAR_MAP
 
-    # Build element definitions
-    def_lines = []
-    field_helper = ""
-
-    for elem in elements:
-        var_name = elem["var_name"]
-        el_name = elem["element_name"]
-        kind = elem.get("kind", "Other")
-        parent = elem.get("parent")
-        interface_kind = elem.get("interface_kind")
-        fields = elem.get("fields", [])
-
-        # Interface kind
-        ik_str = ""
-        if interface_kind:
-            ik_str = f"\n        kind = ImplementationKind.{interface_kind}"
-
-        # Parent
-        parent_str = ""
-        if parent:
-            parent_str = f"\n        parent({parent})"
-
-        # Fields
-        field_lines = []
-        for f in fields:
-            fname = f["name"]
-            ftype = f["type"]
-            is_child = f.get("is_child", True)
-            nullable = f.get("nullable", False)
-            is_mutable = f.get("is_mutable", True)
-            with_transform = f.get("with_transform", True)
-            with_replace = f.get("with_replace", False)
-
-            # Determine if it's a list field
-            if ftype.startswith("List<"):
-                base_type = f.get("list_base_type", ftype[5:-1])
-                list_str = f'"{base_type}",'
-                field_lines.append(
-                    f'        +listField("{fname}", {list_str}\n'
-                    f'            withReplace = {str(with_replace).lower()},\n'
-                    f'            withTransform = {str(with_transform).lower()},\n'
-                    f'            isChild = {str(is_child).lower()})'
-                )
-            else:
-                # Map type names to TypeRef constants
-                type_ref = _map_type_ref(ftype, enums)
-                nullable_str = str(nullable).lower()
-                field_lines.append(
-                    f'        +field("{fname}", {type_ref},\n'
-                    f'            nullable = {nullable_str},\n'
-                    f'            isMutable = {str(is_mutable).lower()},\n'
-                    f'            isChild = {str(is_child).lower()},\n'
-                    f'            withReplace = {str(with_replace).lower()},\n'
-                    f'            withTransform = {str(with_transform).lower()})'
-                )
-
-        fields_str = "\n".join(field_lines) if field_lines else ""
-
-        # Build the element DSL block
-        if var_name == "element":
-            # Root element
-            def_lines.append(f"""\
-    override val rootElement: Element by element(Element.Kind.{kind}, name = "{el_name}") {{
-        hasAcceptChildrenMethod = true
-        hasTransformChildrenMethod = true
-    }}
-""")
-        else:
-            def_lines.append(f"""\
-    val {var_name}: Element by element(Element.Kind.{kind}, name = "{el_name}") {{{ik_str}{parent_str}
-{fields_str}
-    }}
-""")
-
-    # Build type references
+    # Type references
     type_refs = []
     for e in elements:
         en = e["element_name"]
-        # Lowercase the first letter for the type ref name
-        ref_name = en[0].lower() + en[1:] if en else ""
-        type_refs.append(f"    val {ref_name}Type = generatedType(\"{en}\")")
+        ref_name = en[0].lower() + en[1:]
+        type_refs.append(f"    val {ref_name}Type = generatedType(\"Uir{en}\")")
 
-    # Build the enum type references
+    # Enum type references
+    seen_enum_vars = set()
     enum_refs = []
-    for enum_name in ["op_kind", "type_kind", "attr_kind", "dim_kind", "block_kind"]:
-        vals = enums.get(enum_name, [])
-        if vals:
-            # Convert snake_case to PascalCase for the Kotlin class name
-            class_name = "".join(w.capitalize() for w in enum_name.split("_")) + "Kind"
-            ref_name = enum_name  # e.g. "op_kind" -> "opKindType" in the types file
-            enum_refs.append(f"    val {enum_name}Type = generatedType(\"{class_name}\")")
+    for e in elements:
+        for f in e.get("fields", []):
+            ftype = f["type"]
+            if ftype in enum_var_map and enum_var_map[ftype] not in seen_enum_vars:
+                enum_refs.append(f"    val {enum_var_map[ftype]} = generatedType(\"{ftype}\")")
+                seen_enum_vars.add(enum_var_map[ftype])
+
+    # Element definitions
+    def_lines = []
+    for e in elements:
+        var_name = e["var_name"]
+        el_name = e["element_name"]
+        kind = e.get("kind", "Other")
+        parent = e.get("parent")
+        ik = e.get("interface_kind")
+        fields = e.get("fields", [])
+
+        parts = [f'    val {var_name}: Element by element(Element.Kind.{kind}, name = "{el_name}") {{']
+        if ik:
+            parts.append(f'        kind = ImplementationKind.{ik}')
+        if parent:
+            parts.append(f'        parent({parent})')
+        for f in fields:
+            fname = f["name"]
+            ftype = f["type"]
+            if ftype.startswith("List<"):
+                bt = f.get("list_base_type", ftype[5:-1])
+                bref = bt[0].lower() + bt[1:]
+                parts.append(f'        +listField("{fname}", {bref}Type,')
+                parts.append(f'            isChild = {str(f.get("is_child", True)).lower()})')
+            else:
+                ref = _map_type_ref(ftype)
+                parts.append(f'        +field("{fname}", {ref},')
+                parts.append(f'            nullable = {str(f.get("nullable", False)).lower()},')
+                parts.append(f'            isChild = {str(f.get("is_child", True)).lower()},')
+                parts.append(f'            withTransform = {str(f.get("with_transform", True)).lower()})')
+        parts.append("    }")
+        def_lines.append("\n".join(parts))
 
     imports = """\
+package com.fuzzforge.tree.generator
+
 import com.fuzzforge.tree.generator.model.Element
 import com.fuzzforge.tree.generator.model.Field
 import com.fuzzforge.tree.generator.model.ListField
@@ -142,6 +234,8 @@ import org.jetbrains.kotlin.generators.tree.config.AbstractElementConfigurator
 import org.jetbrains.kotlin.generators.tree.withArgs
 """
 
+    elements_str = "\n\n".join(def_lines)
+
     return f"""\
 {imports}
 
@@ -152,7 +246,12 @@ object TreeBuilder : AbstractElementConfigurator<Element, Field, Element.Kind>()
 {chr(10).join(enum_refs)}
 
     // ---- Elements ----
-{chr(10).join(def_lines)}
+    override val rootElement: Element by element(Element.Kind.Other, name = "Element") {{
+        hasAcceptChildrenMethod = true
+        hasTransformChildrenMethod = true
+    }}
+
+{elements_str}
 
     // ---- Helper methods ----
     fun field(
@@ -165,14 +264,8 @@ object TreeBuilder : AbstractElementConfigurator<Element, Field, Element.Kind>()
         isChild: Boolean = true,
         initializer: SimpleField.() -> Unit = {{}},
     ): SimpleField {{
-        return SimpleField(
-            name,
-            type.copy(nullable),
-            isChild = isChild,
-            isMutable = isMutable,
-            withReplace = withReplace,
-            withTransform = withTransform
-        ).apply(initializer)
+        return SimpleField(name, type.copy(nullable), isChild = isChild, isMutable = isMutable,
+            withReplace = withReplace, withTransform = withTransform).apply(initializer)
     }}
 
     fun listField(
@@ -184,91 +277,33 @@ object TreeBuilder : AbstractElementConfigurator<Element, Field, Element.Kind>()
         isChild: Boolean = true,
         initializer: ListField.() -> Unit = {{}},
     ): Field {{
-        return ListField(
-            name,
-            baseType,
-            withReplace = withReplace,
-            isChild = isChild,
-            isMutableOrEmptyList = useMutableOrEmpty,
-            withTransform = withTransform,
-        ).apply(initializer)
+        return ListField(name, baseType, withReplace = withReplace, isChild = isChild,
+            isMutableOrEmptyList = useMutableOrEmpty, withTransform = withTransform).apply(initializer)
     }}
 
-    override fun createElement(
-        name: String,
-        propertyName: String,
-        category: Element.Kind
-    ): Element {{
+    override fun createElement(name: String, propertyName: String, category: Element.Kind): Element {{
         return Element(name, propertyName, category)
     }}
 }}
 """
 
 
-def _map_type_ref(ftype: str, enums: dict) -> str:
-    """Map a field type string to a Kotlin TypeRef expression."""
-    type_map = {
-        "String": "StandardTypes.string",
-        "Int": "StandardTypes.int",
-        "Boolean": "StandardTypes.boolean",
-        "Long": "StandardTypes.long",
-        "Float": "StandardTypes.float",
-    }
-    if ftype in type_map:
-        return type_map[ftype]
-
-    # Check if it's an enum type
-    for enum_name in ["OpKind", "TypeKind", "AttrKind", "DimKind", "BlockKind"]:
-        enum_key = enum_name[0].lower() + ("_".join(
-            c.lower() for c in re.findall(r'[A-Z][a-z]*', enum_name)
-        ) if len(enum_name) > 1 else "")
-        if ftype == enum_name:
-            return f"{enum_key}Type"
-
-    # Assume it's a generated element type
-    ref_name = ftype[0].lower() + ftype[1:]
-    return f"{ref_name}Type"
-
-
 # ---------------------------------------------------------------------------
-# 3. PureAbstractElement
-# ---------------------------------------------------------------------------
-
-def _gen_pure_abstract(pkg: str) -> str:
-    return f"""\
-{_pkg([pkg, "ir"])}
-
-interface FuzzForgePureAbstractElement
-"""
-
-
-# ---------------------------------------------------------------------------
-# 4. GeneratorConfig.kt
+# Generator Config
 # ---------------------------------------------------------------------------
 
 def _gen_generator_config(design: dict[str, Any], pkg: str) -> str:
-    config = design.get("generator_config", {})
-    fields = config.get("fields", [])
-
+    fields = design.get("generator_config", {}).get("fields", [])
     field_lines = []
     for f in fields:
-        name = f["name"]
-        ftype = f["type"]
-        default = f.get("default_value", "")
         desc = f.get("description", "")
-        comment = f"    // {desc}" if desc else ""
-        field_lines.append(f"    val {name}: {ftype} = {default},{comment}")
-
-    fields_str = "\n".join(field_lines)
-
+        field_lines.append(f"    val {f['name']}: {f['type']} = {f.get('default_value', '')}    // {desc}")
     return f"""\
 {_pkg([pkg, "generator"])}
 
-import kotlin.random.Random
-
 data class GeneratorConfig(
     val seed: Long = System.currentTimeMillis(),
-{fields_str}
+{chr(10).join(field_lines)}
 ) {{
     companion object {{
         val default = GeneratorConfig()
@@ -278,319 +313,88 @@ data class GeneratorConfig(
 
 
 # ---------------------------------------------------------------------------
-# 5. Generator.kt
+# Generator, Translator, Runner, Config, CLI, Build files
 # ---------------------------------------------------------------------------
 
 def _gen_generator(design: dict[str, Any], pkg: str) -> str:
-    ir_mode = design.get("ir_mode", "computation_graph")
-    project_name = design.get("project_name", "MyFuzzer")
-    class_name = f"{project_name.capitalize().replace('-', '').replace('_', '')}Generator"
-
-    elements = design.get("tree_builder_elements", [])
-    op_kind_values = design.get("enums", {}).get("op_kind", [])
-
-    # Find the node element
-    node_elem = None
-    graph_elem = None
-    program_elem = None
-    for e in elements:
-        if e["element_name"] == "Node":
-            node_elem = e
-        elif e["element_name"] == "Graph":
-            graph_elem = e
-        elif e["element_name"] == "Program":
-            program_elem = e
-
-    body = ""
-
-    if ir_mode == "computation_graph" and node_elem:
-        body = f"""\
-    private val random: Random = Random.Default
-
-    fun generate(): Program {{
-        val program = ProgramImpl(mutableListOf(), mutableMapOf())
-        val numGraphs = random.nextInt(1, 4)
-        for (g in 0 until numGraphs) {{
-            val graph = generateGraph()
-            program.graphs.add(graph)
-        }}
-        return program
-    }}
-
-    private fun generateGraph(): Graph {{
-        val numNodes = random.nextInt(config.minNodesPerGraph, config.maxNodesPerGraph + 1)
-        val numInputs = random.nextInt(config.minInputs, config.maxInputs + 1)
-        val availableValues = mutableListOf<ValueRef>()
-
-        // Create input values
-        val inputs = mutableListOf<ValueRef>()
-        for (i in 0 until numInputs) {{
-            val valueRef = ValueRefImpl(
-                valueId = "v_input_${{i}}_{random.nextLong().toString(36)}",
-                type = generateTensorType()
-            )
-            inputs.add(valueRef)
-            availableValues.add(valueRef)
-        }}
-
-        // Create nodes
-        val nodes = mutableListOf<Node>()
-        for (n in 0 until numNodes) {{
-            val node = generateNode(availableValues)
-            nodes.add(node)
-            // Add node outputs to available values
-            for (output in node.outputs) {{
-                availableValues.add(output)
-            }}
-        }}
-
-        // Select outputs from available values
-        val numOutputs = minOf(random.nextInt(1, 4), availableValues.size)
-        val outputs = availableValues.shuffled(random).take(numOutputs).toMutableList()
-
-        return GraphImpl(
-            name = "graph_${{random.nextInt()}}",
-            nodes = nodes,
-            inputs = inputs,
-            outputs = outputs,
-        )
-    }}
-
-    private fun generateNode(availableValues: List<ValueRef>): Node {{
-        val op = selectOp()
-        val numInputs = when (op) {{
-            {_gen_op_input_count(op_kind_values)}
-            else -> 1
-        }}
-        val actualInputs = minOf(numInputs, availableValues.size)
-        val selectedInputs = if (availableValues.isEmpty()) {{
-            mutableListOf()
-        }} else {{
-            availableValues.shuffled(random).take(actualInputs).toMutableList()
-        }}
-        val numOutputs = random.nextInt(1, 3)
-        val outputs = mutableListOf<ValueRef>()
-        for (o in 0 until numOutputs) {{
-            outputs.add(ValueRefImpl(
-                valueId = "v_${{random.nextLong().toString(36)}}",
-                type = generateTensorType()
-            ))
-        }}
-        return NodeImpl(
-            name = "node_${{random.nextInt()}}",
-            op = op,
-            inputs = selectedInputs,
-            outputs = outputs,
-            attributes = mutableMapOf(),
-        )
-    }}
-
-    private fun selectOp(): OpKind {{
-        val ops = config.ops
-        val allOps = OpKind.entries.toList()
-        val filtered = if (ops.isEmpty()) allOps else allOps.filter {{ it.name in ops }}
-        if (filtered.isEmpty()) return OpKind.ADD
-        return filtered[random.nextInt(filtered.size)]
-    }}
-
-    private fun generateTensorType(): TensorType {{
-        val ndim = random.nextInt(2, 5)
-        val dims = mutableListOf<Dim>()
-        for (d in 0 until ndim) {{
-            dims.add(DimImpl(DimKind.CONSTANT, random.nextInt(1, 17)))
-        }}
-        return TensorTypeImpl(
-            typeKind = TypeKind.TENSOR,
-            shape = ShapeImpl(dims),
-            dtype = DataTypeImpl("float32", 32),
-        )
-    }}
-"""
-    else:
-        # Generic fallback generator
-        body = f"""\
-    private val random: Random = Random.Default
-
-    fun generate(): Program {{
-        // TODO: implement domain-specific generator logic
-        return ProgramImpl(mutableListOf(), mutableMapOf())
-    }}
-"""
-
+    pn = design.get("project_name", "my-fuzzer")
+    cn = pn.capitalize().replace("-", "").replace("_", "") + "Generator"
     return f"""\
 {_pkg([pkg, "generator"])}
 
 import kotlin.random.Random
-import com.fuzzforge.ir.*
-import com.fuzzforge.ir.types.*
-import com.fuzzforge.ir.impl.*
-import com.fuzzforge.ir.types.impl.*
+import com.fuzzforge.ir.UirProgram
+import com.fuzzforge.ir.impl.UirProgramImpl
+import com.fuzzforge.ir.builder.buildUirProgram
 
-class {class_name}(
+class {cn}(
     private val config: GeneratorConfig = GeneratorConfig.default,
 ) {{
-{body}
+    private val random: Random = Random.Default
+
+    fun generate(): UirProgram {{
+        return buildUirProgram()
+    }}
 }}
 """
 
 
-def _gen_op_input_count(op_kind_values: list[str]) -> str:
-    """Generate the when-branch for op input counts."""
-    unary_ops = {"NEG", "ABS", "SIGN", "EXP", "LOG", "LOG2", "SQRT", "RSQRT",
-                 "RECIPROCAL", "CEIL", "FLOOR", "ROUND", "RELU", "LEAKY_RELU",
-                 "ELU", "SELU", "MISH", "HARDTANH", "SIGMOID", "TANH", "GELU",
-                 "SILU", "SOFTMAX", "LOG_SOFTMAX", "CAST"}
-    binary_ops = {"ADD", "SUBTRACT", "MULTIPLY", "DIVIDE", "MAXIMUM", "MINIMUM", "POWER"}
-
-    lines = []
-    for op in op_kind_values:
-        if op in unary_ops:
-            lines.append(f"            OpKind.{op} -> 1")
-        elif op in binary_ops:
-            lines.append(f"            OpKind.{op} -> 2")
-        else:
-            lines.append(f"            OpKind.{op} -> random.nextInt(1, 3)")
-
-    return "\n".join(lines)
-
-
-# ---------------------------------------------------------------------------
-# 6. Translator interface + default implementation
-# ---------------------------------------------------------------------------
-
-def _gen_translator_interface(design: dict[str, Any], pkg: str) -> str:
-    mode = design.get("ir_mode", "computation_graph")
-    targets = design.get("translator_targets", [])
-    project_name = design.get("project_name", "MyFuzzer")
-    class_name = f"{project_name.capitalize().replace('-', '').replace('_', '')}Translator"
-
-    target_comment = "\n".join(f" *   - {t}" for t in targets)
-
+def _gen_translator(design: dict[str, Any], pkg: str) -> str:
+    pn = design.get("project_name", "my-fuzzer")
+    cn = pn.capitalize().replace("-", "").replace("_", "") + "Translator"
     return f"""\
 {_pkg([pkg, "translator"])}
 
-import com.fuzzforge.ir.Program
+import com.fuzzforge.ir.UirProgram
 
-/**
- * Translator interface: converts FuzzForge IR to target backend code.
- *
- * Supported targets:
-{target_comment}
- */
 interface FuzzForgeTranslator<R> {{
-    fun translate(program: Program): R
+    fun translate(program: UirProgram): R
 }}
 
-/**
- * Default translator that outputs a textual representation of the IR.
- * Useful as a starting point before implementing real backends.
- */
-class {class_name} : FuzzForgeTranslator<String> {{
-    override fun translate(program: Program): String {{
-        val sb = StringBuilder()
-        sb.appendLine("// Generated by FuzzForge - {project_name}")
-        sb.appendLine()
-        for ((i, graph) in program.graphs.withIndex()) {{
-            sb.appendLine("// === Graph ${{i + 1}}: ${{graph.name}} ===")
-            sb.appendLine("// Inputs: ${{graph.inputs.size}}")
-            for (input in graph.inputs) {{
-                sb.appendLine("//   ${{input.valueId}}: ${{renderType(input.type)}}")
-            }}
-            sb.appendLine("// Nodes: ${{graph.nodes.size}}")
-            for (node in graph.nodes) {{
-                val inputIds = node.inputs.joinToString(", ") {{ it.valueId }}
-                val outputIds = node.outputs.joinToString(", ") {{ it.valueId }}
-                sb.appendLine("//   ${{node.name}}: ${{node.op}}($inputIds) -> [$outputIds]")
-            }}
-            sb.appendLine("// Outputs: ${{graph.outputs.size}}")
-            for (output in graph.outputs) {{
-                sb.appendLine("//   ${{output.valueId}}: ${{renderType(output.type)}}")
-            }}
-            sb.appendLine()
-        }}
-        return sb.toString()
-    }}
-
-    private fun renderType(type: com.fuzzforge.ir.types.TensorType): String {{
-        val dims = type.shape.dims.joinToString("x") {{ dim ->
-            dim.value?.toString() ?: "?"
-        }}
-        return "Tensor[$dims]:${{type.dtype.name}}"
+class {cn} : FuzzForgeTranslator<String> {{
+    override fun translate(program: UirProgram): String {{
+        return "Generated by FuzzForge"
     }}
 }}
 """
 
 
-# ---------------------------------------------------------------------------
-# 7. Runner
-# ---------------------------------------------------------------------------
-
 def _gen_runner(design: dict[str, Any], pkg: str) -> str:
-    project_name = design.get("project_name", "MyFuzzer")
-    class_name = f"{project_name.capitalize().replace('-', '').replace('_', '')}Runner"
-
+    pn = design.get("project_name", "my-fuzzer")
+    base = pn.capitalize().replace("-", "").replace("_", "")
     return f"""\
 {_pkg([pkg, "runner"])}
 
-import com.fuzzforge.generator.{project_name.capitalize().replace('-', '').replace('_', '')}Generator
-import com.fuzzforge.translator.{project_name.capitalize().replace('-', '').replace('_', '')}Translator
+import com.fuzzforge.generator.{base}Generator
+import com.fuzzforge.translator.{base}Translator
 import com.fuzzforge.config.RunConfig
-import com.fuzzforge.ir.Program
 import kotlinx.coroutines.*
 import java.io.File
-import kotlin.system.measureTimeMillis
 
-data class RunResult(
-    val success: Boolean,
-    val stdout: String,
-    val stderr: String,
-    val exitCode: Int,
-    val durationMs: Long,
-)
+data class RunResult(val success: Boolean, val stdout: String, val stderr: String, val exitCode: Int, val durationMs: Long)
 
-class {class_name}(
+class {base}Runner(
     private val config: RunConfig,
 ) {{
-    private val generator = {project_name.capitalize().replace('-', '').replace('_', '')}Generator(config.generatorConfig)
-    private val translator = {project_name.capitalize().replace('-', '').replace('_', '')}Translator()
+    private val generator = {base}Generator(config.generatorConfig)
+    private val translator = {base}Translator()
 
     suspend fun runSingle(seed: Long? = null): RunResult {{
         val program = if (seed != null) {{
-            {project_name.capitalize().replace('-', '').replace('_', '')}Generator(config.generatorConfig.copy(seed = seed)).generate()
+            {base}Generator(config.generatorConfig.copy(seed = seed)).generate()
         }} else {{
             generator.generate()
         }}
-
         val code = translator.translate(program)
-        val outputDir = File(config.outputDir)
-        if (!outputDir.exists()) outputDir.mkdirs()
-
-        val sourceFile = File(outputDir, "generated_output.txt")
-        sourceFile.writeText(code)
-
-        return RunResult(
-            success = true,
-            stdout = code,
-            stderr = "",
-            exitCode = 0,
-            durationMs = 0,
-        )
+        return RunResult(success = true, stdout = code, stderr = "", exitCode = 0, durationMs = 0)
     }}
 
     suspend fun runBatch(count: Int): List<RunResult> = coroutineScope {{
-        val results = mutableListOf<RunResult>()
-        for (i in 0 until count) {{
-            results.add(runSingle())
-        }}
-        results
+        (0 until count).map {{ runSingle() }}
     }}
 }}
 """
 
-
-# ---------------------------------------------------------------------------
-# 8. RunConfig
-# ---------------------------------------------------------------------------
 
 def _gen_run_config(pkg: str) -> str:
     return f"""\
@@ -613,14 +417,9 @@ data class RunConfig(
 """
 
 
-# ---------------------------------------------------------------------------
-# 9. App.kt
-# ---------------------------------------------------------------------------
-
 def _gen_app(design: dict[str, Any], pkg: str) -> str:
-    project_name = design.get("project_name", "MyFuzzer")
-    class_name = f"{project_name.capitalize().replace('-', '').replace('_', '')}"
-
+    pn = design.get("project_name", "my-fuzzer")
+    base = pn.capitalize().replace("-", "").replace("_", "")
     return f"""\
 {_pkg([pkg, "cli"])}
 
@@ -628,118 +427,78 @@ import com.github.ajalt.clikt.core.CliktCommand
 import com.github.ajalt.clikt.core.context
 import com.github.ajalt.clikt.core.subcommands
 import com.github.ajalt.clikt.parameters.options.*
+import com.github.ajalt.clikt.parameters.types.int
 import com.github.ajalt.clikt.output.MordantHelpFormatter
 import com.fuzzforge.config.RunConfig
-import com.fuzzforge.generator.{class_name}Generator
-import com.fuzzforge.runner.{class_name}Runner
+import com.fuzzforge.generator.{base}Generator
+import com.fuzzforge.runner.{base}Runner
 import kotlinx.coroutines.runBlocking
 
-/**
- * {class_name} CLI — Fuzzer generated by FuzzForge.
- *
- * Target: {design.get("description", "AI compiler fuzzing")}
- * IR mode: {design.get("ir_mode", "computation_graph")}
- */
-class {class_name}Command : CliktCommand(
-    name = "{project_name.lower()}",
-    help = "{design.get("description", "Fuzzer generated by FuzzForge")}",
+class {base}Command : CliktCommand(
+    name = "{pn.lower()}",
+    help = "{design.get('description', 'Fuzzer generated by FuzzForge')}",
 ) {{
     init {{
         context {{ helpFormatter = {{ MordantHelpFormatter(it, showDefaultValues = true) }} }}
         subcommands(RunCommand(), GenerateCommand())
     }}
-
     override fun run() {{
-        echo("{class_name} — Fuzzer generated by FuzzForge")
+        echo("{base} — Fuzzer")
         echo("Run with a subcommand: run or generate")
-        echo("Use --help on any subcommand for details.")
     }}
 }}
 
 class RunCommand : CliktCommand(name = "run", help = "Run fuzzing campaign") {{
-    val count: Int by option("-n", "--count", help = "Number of programs to generate and run")
-        .int().default(10)
-    val output: String by option("-o", "--output", help = "Output directory")
-        .default("./reports")
-
+    val count: Int by option("-n").int().default(10)
+    val output: String by option("-o").default("./reports")
     override fun run() {{
-        echo("Running fuzzing campaign: $count programs")
+        echo("Running campaign: $count programs")
         val config = RunConfig(outputDir = output)
-        val runner = {class_name}Runner(config)
+        val runner = {base}Runner(config)
         runBlocking {{
             val results = runner.runBatch(count)
-            val successes = results.count {{ it.success }}
-            echo("Done: $successes/$count succeeded")
+            echo("Done: ${{results.count {{ it.success }}}}/$count succeeded")
         }}
     }}
 }}
 
-class GenerateCommand : CliktCommand(name = "generate", help = "Generate programs only (no execution)") {{
-    val count: Int by option("-n", "--count", help = "Number of programs to generate")
-        .int().default(5)
-    val output: String by option("-o", "--output", help = "Output directory")
-        .default("./generated")
-
+class GenerateCommand : CliktCommand(name = "generate", help = "Generate programs only") {{
+    val count: Int by option("-n").int().default(5)
     override fun run() {{
-        val generator = {class_name}Generator()
+        val generator = {base}Generator()
         for (i in 0 until count) {{
-            val program = generator.generate()
-            echo("Generated program ${{i + 1}}: ${{program.graphs.size}} graphs")
+            generator.generate()
+            echo("Generated ${{i + 1}}")
         }}
-        echo("Generated $count programs to $output")
     }}
 }}
 
-fun main(args: Array<String>) = {class_name}Command().main(args)
+fun main(args: Array<String>) = {base}Command().main(args)
 """
 
 
 # ---------------------------------------------------------------------------
-# 10. Build files
+# Build files
 # ---------------------------------------------------------------------------
 
 def _gen_settings(project_name: str) -> str:
-    safe_name = project_name.lower().replace("-", "").replace("_", "")
+    safe = project_name.lower().replace("-", "").replace("_", "")
     return f"""\
-pluginManagement {{
-    plugins {{
-        kotlin("jvm") version "2.4.0"
-    }}
-}}
-rootProject.name = "{safe_name}"
-
+pluginManagement {{ plugins {{ kotlin("jvm") version "2.4.0" }} }}
+rootProject.name = "{safe}"
 include(":tree")
 include(":tree:tree-generator")
 """
 
 
 def _gen_root_build(project_name: str) -> str:
-    safe_name = project_name.lower().replace("-", "").replace("_", "")
-    class_name = "".join(w.capitalize() for w in project_name.replace("-", " ").replace("_", " ").split())
-
+    base = "".join(w.capitalize() for w in project_name.replace("-", " ").replace("_", " ").split())
     return f"""\
-plugins {{
-    id("java")
-    kotlin("jvm")
-    application
-    kotlin("plugin.serialization") version "2.4.0"
-}}
-
-group = "com.fuzzforge"
-version = "1.0-SNAPSHOT"
-
-repositories {{
-    mavenCentral()
-}}
-
-kotlin {{
-    jvmToolchain(17)
-}}
-
+plugins {{ id("java"); kotlin("jvm"); application; kotlin("plugin.serialization") version "2.4.0" }}
+group = "com.fuzzforge"; version = "1.0-SNAPSHOT"
+repositories {{ mavenCentral() }}
+kotlin {{ jvmToolchain(17) }}
 dependencies {{
-    testImplementation(platform("org.junit:junit-bom:6.0.0"))
-    testImplementation("org.junit.jupiter:junit-jupiter")
-    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     implementation(kotlin("stdlib"))
     implementation(project(":tree"))
     implementation("org.yaml:snakeyaml:2.0")
@@ -749,353 +508,109 @@ dependencies {{
     implementation("io.github.oshai:kotlin-logging-jvm:7.0.3")
     implementation("ch.qos.logback:logback-classic:1.5.18")
 }}
-
-application {{
-    mainClass = "com.fuzzforge.cli.{class_name}CommandKt"
-}}
-
-sourceSets {{
-    main {{
-        kotlin {{
-            srcDirs("src/main/kotlin")
-        }}
-    }}
-}}
-
-tasks.test {{
-    useJUnitPlatform()
-}}
+application {{ mainClass = "com.fuzzforge.cli.{base}CommandKt" }}
+sourceSets.main {{ kotlin.srcDir("src/main/kotlin") }}
+tasks.test {{ useJUnitPlatform() }}
 """
 
 
-def _gen_tree_build(project_name: str) -> str:
-    return f"""\
-plugins {{
-    kotlin("jvm")
-    kotlin("plugin.serialization") version "2.4.0"
-}}
-
-repositories {{
-    mavenCentral()
-}}
-
-sourceSets {{
-    main {{
-        kotlin.srcDir("src")
-    }}
-}}
-
-val generateTree = tasks.register<JavaExec>("generateTree") {{
-    group = "generation"
-    description = "Generate IR tree sources into tree/gen"
-
-    workingDir = rootDir
+def _gen_tree_build() -> str:
+    return """\
+plugins { kotlin("jvm"); kotlin("plugin.serialization") version "2.4.0" }
+repositories { mavenCentral() }
+sourceSets.main { kotlin.srcDir("src") }
+val generateTree = tasks.register<JavaExec>("generateTree") {
+    group = "generation"; workingDir = rootDir
     classpath = project(":tree:tree-generator").sourceSets.main.get().runtimeClasspath
     mainClass.set("com.fuzzforge.tree.generator.MainKt")
-
     val generationRoot = layout.projectDirectory.dir("gen")
     args(generationRoot.asFile.absolutePath)
-
     systemProperties["line.separator"] = "\\n"
-
     val generatorSourceRoot = rootDir.resolve("tree/tree-generator/src")
-    val generatorConfigFiles = fileTree(generatorSourceRoot) {{
-        include("**/*.kt")
-    }}
-    inputs.files(generatorConfigFiles)
+    inputs.files(fileTree(generatorSourceRoot) { include("**/*.kt") })
     outputs.dir(generationRoot)
-}}
-
-sourceSets.main.configure {{
-    kotlin.srcDir(layout.projectDirectory.dir("gen"))
-}}
-
-tasks.compileKotlin {{
-    dependsOn(generateTree)
-}}
-
-kotlin {{
-    jvmToolchain(17)
-}}
-
-dependencies {{
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
-}}
+}
+sourceSets.main { kotlin.srcDir(layout.projectDirectory.dir("gen")) }
+tasks.compileKotlin { dependsOn(generateTree) }
+kotlin { jvmToolchain(17) }
+dependencies { implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3") }
 """
 
 
 def _gen_tree_generator_build() -> str:
     return """\
-plugins {
-    kotlin("jvm")
-    application
-}
-
-repositories {
-    mavenCentral()
-}
-
-kotlin {
-    jvmToolchain(17)
-}
-
-application {
-    mainClass = "com.fuzzforge.tree.generator.MainKt"
-}
-
-tasks.named<JavaExec>("run") {
-    workingDir = rootDir
-}
-
-dependencies {
-    implementation(files(rootProject.file("libs/tree-generator-common.jar")))
-    testImplementation(kotlin("test"))
-}
+plugins { kotlin("jvm"); application }
+repositories { mavenCentral() }
+kotlin { jvmToolchain(17) }
+application { mainClass = "com.fuzzforge.tree.generator.MainKt" }
+tasks.named<JavaExec>("run") { workingDir = rootDir }
+dependencies { implementation(files(rootProject.file("libs/tree-generator-common.jar"))) }
 """
 
 
 # ---------------------------------------------------------------------------
-# 11. Default config YAML
+# Main entry point
 # ---------------------------------------------------------------------------
-
-def _gen_default_config(project_name: str) -> str:
-    return f"""\
-# {project_name} — default fuzzing configuration
-run:
-  description: "{project_name} fuzzing campaign"
-  seed: null
-  output_dir: "./reports"
-  log_level: "info"
-
-generator:
-  min_nodes: 5
-  max_nodes: 40
-  min_inputs: 1
-  max_inputs: 4
-  strategy: "random"
-  ops:
-    include_all: true
-
-pipeline:
-  workers: 4
-  batch_size: 200
-  run_timeout_seconds: 120
-  reducer:
-    enabled: true
-"""
-
-
-# ---------------------------------------------------------------------------
-# Main entry point: generate full project
-# ---------------------------------------------------------------------------
-
-import re
-
 
 def generate_project(design: dict[str, Any], output_dir: str) -> str:
-    """Generate the complete Kotlin fuzzer project from IR design.
-
-    Returns the path to the generated project root.
-    """
+    """Generate the complete Kotlin fuzzer project from IR design."""
     project_name = design.get("project_name", "my-fuzzer")
     pkg = "com.fuzzforge"
     tree_pkg = "com.fuzzforge"
-    generator_pkg = "com.fuzzforge.tree.generator"
 
     dirs = create_project_scaffold(output_dir, project_name)
-
     elements = design.get("tree_builder_elements", [])
     enums = design.get("enums", {})
 
-    # ---- Write enums ----
-    for enum_name, values in enums.items():
-        if not values:
-            continue
-        class_name = "".join(w.capitalize() for w in enum_name.split("_")) + "Kind"
-        content = _gen_enum(class_name, values, f"{pkg}.ir")
-        Path(dirs["tree_src"]) / f"{class_name}.kt"
+    # Phase 2a: Copy tree-generator boilerplate
+    _copy_tree_generator_boilerplate(output_dir)
 
-    # Write specific enum files
-    enum_map = {
-        "op_kind": "OpKind",
-        "type_kind": "TypeKind",
-        "attr_kind": "AttrKind",
-        "dim_kind": "DimKind",
-        "block_kind": "BlockKind",
-    }
-    for key, class_name in enum_map.items():
+    # Phase 2b: Generate design-specific files
+    # ImplConfigurator + BuilderConfigurator
+    Path(dirs["tree_generator"]).joinpath("ImplConfigurator.kt").write_text(
+        _gen_impl_configurator(elements))
+    Path(dirs["tree_generator"]).joinpath("BuilderConfigurator.kt").write_text(
+        _gen_builder_configurator(elements))
+
+    # TreeBuilder.kt
+    Path(dirs["tree_generator"]).joinpath("TreeBuilder.kt").write_text(
+        _gen_tree_builder(design))
+
+    # Enums
+    for key, class_name in [("op_kind", "OpKind"), ("type_kind", "TypeKind"),
+                            ("attr_kind", "AttrKind"), ("dim_kind", "DimKind"),
+                            ("block_kind", "BlockKind"), ("class_kind", "ClassKind"),
+                            ("language", "Language")]:
         values = enums.get(key, [])
         if values:
-            content = _gen_enum(class_name, values, f"{tree_pkg}.ir")
-            Path(dirs["tree_src"]).joinpath(f"{class_name}.kt").write_text(content)
+            Path(dirs["tree_src"]).joinpath(f"{class_name}.kt").write_text(
+                _gen_enum(class_name, values, f"{tree_pkg}.ir"))
 
-    # ---- Write PureAbstractElement ----
-    Path(dirs["tree_src"]).joinpath("FuzzForgePureAbstractElement.kt").write_text(
-        _gen_pure_abstract(tree_pkg)
-    )
-
-    # ---- Write TreeBuilder.kt ----
-    tb_path = Path(dirs["tree_generator"]) / "TreeBuilder.kt"
-    tb_path.write_text(_gen_tree_builder(design, generator_pkg))
-
-    # ---- Write Main.kt for tree-generator ----
-    main_path = Path(dirs["tree_generator"]) / "main.kt"
-    main_path.write_text(
-        _gen_tree_generator_main(generator_pkg)
-    )
-
-    # ---- Write GeneratorConfig.kt ----
+    # GeneratorConfig
     Path(dirs["src_config"]).joinpath("GeneratorConfig.kt").write_text(
-        _gen_generator_config(design, pkg)
-    )
+        _gen_generator_config(design, pkg))
 
-    # ---- Write Generator.kt ----
+    # Generator, Translator, Runner, Config, CLI
     Path(dirs["src_generator"]).joinpath("Generator.kt").write_text(
-        _gen_generator(design, pkg)
-    )
-
-    # ---- Write Translator ----
+        _gen_generator(design, pkg))
     Path(dirs["src_translator"]).joinpath("Translator.kt").write_text(
-        _gen_translator_interface(design, pkg)
-    )
-
-    # ---- Write Runner ----
+        _gen_translator(design, pkg))
     Path(dirs["src_runner"]).joinpath("Runner.kt").write_text(
-        _gen_runner(design, pkg)
-    )
-
-    # ---- Write RunConfig ----
+        _gen_runner(design, pkg))
     Path(dirs["src_config"]).joinpath("RunConfig.kt").write_text(
-        _gen_run_config(pkg)
-    )
-
-    # ---- Write App.kt (CLI) ----
+        _gen_run_config(pkg))
     Path(dirs["src_cli"]).joinpath("App.kt").write_text(
-        _gen_app(design, pkg)
-    )
+        _gen_app(design, pkg))
 
-    # ---- Write build files ----
-    Path(dirs["output"]).joinpath("settings.gradle.kts").write_text(
-        _gen_settings(project_name)
-    )
-    Path(dirs["output"]).joinpath("build.gradle.kts").write_text(
-        _gen_root_build(project_name)
-    )
-    Path(dirs["output"]).joinpath("tree", "build.gradle.kts").write_text(
-        _gen_tree_build(project_name)
-    )
+    # Build files
+    Path(dirs["output"]).joinpath("settings.gradle.kts").write_text(_gen_settings(project_name))
+    Path(dirs["output"]).joinpath("build.gradle.kts").write_text(_gen_root_build(project_name))
+    Path(dirs["output"]).joinpath("tree", "build.gradle.kts").write_text(_gen_tree_build())
     Path(dirs["output"]).joinpath("tree", "tree-generator", "build.gradle.kts").write_text(
-        _gen_tree_generator_build()
-    )
+        _gen_tree_generator_build())
 
-    # ---- Write default config ----
-    Path(dirs["configs"]).joinpath("default.yaml").write_text(
-        _gen_default_config(project_name)
-    )
-
-    # ---- Write README.md ----
-    readme = f"""# {project_name}
-
-Fuzzer generated by **FuzzForge**.
-
-Target: {design.get("description", "N/A")}
-IR mode: {design.get("ir_mode", "computation_graph")}
-
-## Build
-
-```bash
-# Download tree-generator-common.jar first
-# See the tool's documentation for download instructions
-mkdir -p libs
-# Place tree-generator-common.jar in libs/
-
-./gradlew :tree:generateTree
-./gradlew build
-```
-
-## Run
-
-```bash
-./gradlew :run --args="run -n 100"
-./gradlew :run --args="generate -n 10"
-```
-
-## Project Structure
-
-```
-tree/              # IR data structure (auto-generated)
-├── src/           # Hand-written enums, DSL, utils
-├── gen/           # Auto-generated IR code (DO NOT EDIT)
-└── tree-generator/# TreeBuilder meta-model
-src/main/kotlin/   # Generator, Translator, Runner, Reducer
-configs/           # YAML run configurations
-```
-"""
-    Path(dirs["output"]).joinpath("README.md").write_text(readme)
-
-    # ---- Write .gitignore ----
-    gitignore = """\
-.gradle/
-build/
-out/
-*.class
-.idea/
-*.iml
-local.properties
-gen/
-"""
-    Path(dirs["output"]).joinpath(".gitignore").write_text(gitignore)
+    # README + .gitignore
+    Path(dirs["output"]).joinpath("README.md").write_text(f"# {project_name}\n\nFuzzer generated by FuzzForge.\n")
+    Path(dirs["output"]).joinpath(".gitignore").write_text(".gradle/\nbuild/\nout/\ngen/\n")
 
     return str(dirs["output"])
-
-
-def _gen_tree_generator_main(pkg: str) -> str:
-    return f"""\
-package {pkg}
-
-import {pkg}.printer.BuilderPrinter
-import {pkg}.printer.DefaultVisitorVoidPrinter
-import {pkg}.printer.ElementPrinter
-import {pkg}.printer.ImplementationPrinter
-import {pkg}.printer.TransformerPrinter
-import {pkg}.printer.VisitorPrinter
-import {pkg}.printer.VisitorVoidPrinter
-import org.jetbrains.kotlin.generators.tree.InterfaceAndAbstractClassConfigurator
-import org.jetbrains.kotlin.generators.tree.detectBaseTransformerTypes
-import org.jetbrains.kotlin.generators.tree.printer.TreeGenerator
-import java.io.File
-
-fun main(args: Array<String>) {{
-    val model = TreeBuilder.build()
-    TreeGenerator(File("tree/gen"), "README.md").run {{
-        model.inheritFields()
-        detectBaseTransformerTypes(model)
-
-        ImplConfigurator.configureImplementations(model)
-        val implementations = model.elements.flatMap {{ it.implementations }}
-        InterfaceAndAbstractClassConfigurator((model.elements + implementations))
-            .configureInterfacesAndAbstractClasses()
-        model.addPureAbstractElement(pureAbstractElementType)
-
-        val builderConfigurator = BuilderConfigurator(model)
-        builderConfigurator.configureBuilders()
-
-        printElements(model, ::ElementPrinter)
-        printElementImplementations(implementations, ::ImplementationPrinter)
-        printElementBuilders(
-            implementations.mapNotNull {{ it.builder }},
-            ::BuilderPrinter
-        )
-        printVisitors(
-            model,
-            listOf(
-                irVisitorType to {{ p, t -> VisitorPrinter(p, t, false) }},
-                irDefaultVisitorType to {{ p, t -> VisitorPrinter(p, t, true) }},
-                irVisitorVoidType to {{ p, t -> VisitorVoidPrinter(p, t) }},
-                irDefaultVisitorVoidType to {{ p, t -> DefaultVisitorVoidPrinter(p, t) }},
-                irTransformerType to {{ p, t -> TransformerPrinter(p, t, model.rootElement) }},
-            )
-        )
-    }}
-}}
-"""

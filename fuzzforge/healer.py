@@ -86,31 +86,22 @@ def build_fix_prompt(
     stderr: str,
     stdout: str,
     design: dict[str, Any],
-    max_files: int = 8,
+    max_files: int = 5,
 ) -> str:
-    """Build a comprehensive fix prompt with error context and relevant source files."""
+    """Build a compact fix prompt with error context and key source files."""
     lines = []
-    lines.append("The generated Kotlin fuzzer project has build errors.")
-    lines.append("")
-    lines.append("## Build Error (stderr)")
-    lines.append(stderr[:6000])
-    lines.append("")
-    lines.append("## Build Output (stdout)")
-    lines.append(stdout[-2000:])
+    lines.append("Build errors:")
+    lines.append(stderr[:3000])
     lines.append("")
 
-    lines.append("## Relevant Source Files")
     base = Path(project_dir)
 
+    # Only include the most critical files
     patterns = [
-        "**/cli/App.kt", "**/generator/*.kt", "**/translator/*.kt",
         "**/TreeBuilder.kt",
-        "**/tree-generator/src/**/main.kt",
-        "**/tree-generator/src/**/types.kt",
-        "**/tree-generator/src/**/model/Element.kt",
-        "**/ir/OpKind.kt", "**/ir/TypeKind.kt",
-        "**/ir/ClassKind.kt", "**/ir/Language.kt",
-        "**/build.gradle.kts",
+        "**/cli/App.kt",
+        "**/generator/*.kt",
+        "**/translator/*.kt",
     ]
 
     seen = set()
@@ -120,21 +111,15 @@ def build_fix_prompt(
                 continue
             seen.add(f.name)
             rel = f.relative_to(base)
-            content = f.read_text()
-            lines.append(f"")
-            lines.append(f"### FILE: {rel}")
-            lines.append("```kotlin")
-            lines.append(content)
-            lines.append("```")
+            lines.append(f"--- {rel} ---")
+            lines.append(f.read_text())
             if len(seen) >= max_files:
                 break
         if len(seen) >= max_files:
             break
 
     lines.append("")
-    lines.append("## IR Design (for reference)")
-    lines.append(json.dumps(design, indent=2)[:3000])
-
+    lines.append("Output patches as JSON array.")
     return "\n".join(lines)
 
 
