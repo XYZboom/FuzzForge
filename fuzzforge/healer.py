@@ -47,14 +47,14 @@ def call_llm_for_fix(prompt: str) -> str:
                     '  }\n'
                     "]\n\n"
                     "RULES:\n"
-                    "1. Each patch replaces one unique string with another.\n"
-                    "2. Include enough surrounding context (3-5 lines) for uniqueness.\n"
-                    '3. If a file is missing entirely, set old_string to "__FILE_MISSING__" and new_string to the full file content.\n'
-                    '4. If the file needs to be deleted, set old_string to "__FILE_DELETE__" and new_string to "".\n'
+                    "1. NEVER patch files matching 'tree/gen/' (auto-generated, DO NOT EDIT).\n"
+                    "2. NEVER delete files (do NOT use __FILE_DELETE__).\n"
+                    "3. NEVER create new files (do NOT use __FILE_MISSING__).\n"
+                    "4. Each patch replaces one unique string with another. Include enough surrounding context (3-5 lines).\n"
                     "5. Fix package declarations: every Kotlin file must have a valid package line.\n"
-                    "6. Fix missing imports: if code references UirProgram but only Program is imported, add the import.\n"
-                    "7. Fix type name mismatches: generated types use Uir prefix (UirProgram, UirNode, etc.).\n"
-                    "8. Fix references to non-existent properties (program.graphs, program.classes, etc.).\n"
+                    "6. Fix missing imports: if code references UirClass but only Class is imported, add the import for the Uir-prefixed type.\n"
+                    "7. Fix type name mismatches: generated types use Uir prefix (UirProgram, UirNode, etc.). Business code must use the full type name.\n"
+                    "8. Fix references to non-existent properties like program.graphs, program.classes.\n"
                     "9. Only output valid JSON, no markdown fences, no extra text.\n"
                 ),
             },
@@ -175,16 +175,14 @@ def apply_patches(project_dir: str, patches: list[dict[str, str]]) -> list[str]:
 
         full_path = base / file_path
 
-        if old_str == "__FILE_MISSING__":
-            full_path.parent.mkdir(parents=True, exist_ok=True)
-            full_path.write_text(new_str)
-            applied.append(f"CREATED {file_path}")
+        # Reject patches to auto-generated tree/gen files
+        if "tree/gen" in file_path:
+            applied.append(f"REJECTED {file_path} — auto-generated file, DO NOT EDIT")
             continue
 
-        if old_str == "__FILE_DELETE__":
-            if full_path.exists():
-                full_path.unlink()
-                applied.append(f"DELETED {file_path}")
+        # Reject file creation/deletion — the LLM should not do this
+        if old_str in ("__FILE_MISSING__", "__FILE_DELETE__"):
+            applied.append(f"REJECTED {file_path} ({old_str}) — no file creation/deletion allowed")
             continue
 
         if not full_path.exists():
