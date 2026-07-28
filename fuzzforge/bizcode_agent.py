@@ -212,7 +212,10 @@ class CppGenVisitor : UirDefaultVisitor<Unit, StringBuilder>() {{
         }}
         data.appendLine(" {{")
         data.appendLine("public:")
-        data.appendLine("    virtual ~${{cd.name}}() = default;")
+        // Unions cannot have virtual functions in C++
+        if (cd.classKind != ClassKind.UNION) {{
+            data.appendLine("    virtual ~${{cd.name}}() = default;")
+        }}
         cd.functionContainer?.let {{ fc -> visitFuncContainer(fc, data) }}
         data.appendLine("}};")
         data.appendLine()
