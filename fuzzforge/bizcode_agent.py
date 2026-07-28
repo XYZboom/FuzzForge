@@ -412,13 +412,20 @@ class RunCommand : CliktCommand(name = "run", help = "Run fuzzing campaign with 
     }}
 }}
 
-class GenerateCommand : CliktCommand(name = "generate", help = "Generate programs only") {{
+class GenerateCommand : CliktCommand(name = "generate", help = "Generate programs and optionally show source") {{
     val count: Int by option("-n").int().default(5)
+    val show: Boolean by option("--show", "-s").flag(default = false)
     override fun run() {{
         val generator = {base}Generator()
+        val translator = {base}Translator()
         for (i in 0 until count) {{
-            generator.generate()
-            echo("Generated ${{i + 1}}")
+            val program = generator.generate()
+            if (show) {{
+                echo("--- Program ${{i + 1}} ---")
+                echo(translator.translate(program))
+            }} else {{
+                echo("Generated ${{i + 1}}")
+            }}
         }}
     }}
 }}
