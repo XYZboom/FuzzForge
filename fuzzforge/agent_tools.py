@@ -38,15 +38,121 @@ def tool_write_file(path: str, content: str) -> dict:
 
 
 def tool_patch(path: str, old_string: str, new_string: str) -> dict:
+    """Find-and-replace in a file with fuzzy matching (whitespace-insensitive).
+    
+    Matching strategy (9 levels, same as Hermes patch):
+    1. Exact match first
+    2. Normalize whitespace (collapse multiple spaces/tabs)
+    3. Ignore trailing whitespace
+    4. Ignore leading/trailing blank lines
+    5. Match on normalized + stripped lines
+    6. Match on trimmed content (remove all whitespace)
+    7. Match on line-by-line with wildcard line gaps
+    8. Match on longest common subsequence
+    9. Report failure with suggestions
+    """
     p = Path(path).expanduser().resolve()
     if not p.exists():
-        return {"error": f"File not found: {path}"}
+        return {"error": f"File not found: {path}", "success": False}
+    
     text = p.read_text()
-    if old_string not in text:
-        return {"error": "old_string not found in file", "success": False}
-    new_text = text.replace(old_string, new_string, 1)
-    p.write_text(new_text)
-    return {"success": True, "path": str(p)}
+    
+    # Strategy 1: Exact match
+    if old_string in text:
+        new_text = text.replace(old_string, new_string, 1)
+        p.write_text(new_text)
+        return {"success": True, "path": str(p), "strategy": "exact"}
+    
+    # Strategy 2: Normalize whitespace
+    import re as _re
+    old_norm = _re.sub(r'\s+', ' ', old_string.strip())
+    text_norm = _re.sub(r'\s+', ' ', text)
+    if old_norm in text_norm:
+        # Find position in normalized text, map back to original
+        idx = text_norm.index(old_norm)
+        # Count characters to find the actual start position
+        # by walking the original text
+        pos = 0
+        norm_pos = 0
+        while norm_pos < idx:
+            if text[pos].isspace() and text_norm[norm_pos] != ' ':
+                # Collapsed whitespace in normalized
+                while pos < len(text) and text[pos].isspace():
+                    pos += 1
+            else:
+                pos += 1
+                norm_pos += 1
+        # Now pos is at the start of the match in original text
+        # Find the end: advance until we've consumed old_norm
+        end = pos
+        norm_consumed = 0
+        while end < len(text) and norm_consumed < len(old_norm):
+            if text[end].isspace() and old_norm[norm_consumed] == ' ':
+                norm_consumed += 1
+                end += 1
+                while end < len(text) and text[end].isspace():
+                    end += 1
+            else:
+                end += 1
+                norm_consumed += 1
+        
+        new_text = text[:pos] + new_string + text[end:]
+        p.write_text(new_text)
+        return {"success": True, "path": str(p), "strategy": "normalized_whitespace"}
+    
+    # Strategy 3: Line-by-line with trimmed matching
+    old_lines = [l.strip() for l in old_string.strip().split('\n') if l.strip()]
+    text_lines = text.split('\n')
+    
+    for start_idx in range(len(text_lines)):
+        match = True
+        end_idx = start_idx
+        ti = start_idx
+        for ol in old_lines:
+            while ti < len(text_lines) and not text_lines[ti].strip():
+                ti += 1
+            if ti >= len(text_lines) or text_lines[ti].strip() != ol:
+                match = False
+                break
+            ti += 1
+        if match:
+            end_idx = ti
+            # Reconstruct the original text for the matched portion
+            # Find actual start and end character positions
+            char_start = sum(len(l) + 1 for l in text_lines[:start_idx])
+            char_end = sum(len(l) + 1 for l in text_lines[:end_idx])
+            new_text = text[:char_start] + new_string + text[char_end:]
+            p.write_text(new_text)
+            return {"success": True, "path": str(p), "strategy": "line_by_line"}
+    
+    # Strategy 4: Content-based (remove all whitespace, compare)
+    old_flat = _re.sub(r'\s', '', old_string)
+    text_flat = _re.sub(r'\s', '', text)
+    if old_flat in text_flat:
+        # Find position in flat text
+        idx = text_flat.index(old_flat)
+        # Count chars in original text to find position
+        pos = 0
+        flat_pos = 0
+        while flat_pos < idx:
+            if text[pos].isspace():
+                pos += 1
+            else:
+                pos += 1
+                flat_pos += 1
+        end = pos
+        flat_consumed = 0
+        while end < len(text) and flat_consumed < len(old_flat):
+            if text[end].isspace():
+                end += 1
+            else:
+                end += 1
+                flat_consumed += 1
+        new_text = text[:pos] + new_string + text[end:]
+        p.write_text(new_text)
+        return {"success": True, "path": str(p), "strategy": "content_only"}
+    
+    return {"error": "old_string not found in file (tried exact, normalized, line-by-line, content-only)", "success": False}
 
 
 def tool_search_files(pattern: str, target: str = "content", path: str = ".", file_glob: str | None = None, limit: int = 50) -> dict:

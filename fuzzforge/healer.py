@@ -204,6 +204,12 @@ def apply_patches(project_dir: str, patches: list[dict[str, str]]) -> list[str]:
 
         content = full_path.read_text()
         if old_str not in content:
+            # Try fuzzy matching via agent_tools (which also writes the file)
+            from fuzzforge.agent_tools import tool_patch
+            result = tool_patch(str(full_path), old_str, new_str)
+            if result.get("success"):
+                applied.append(f"PATCHED {file_path} (fuzzy: {result.get('strategy', 'unknown')})")
+                continue
             applied.append(f"SKIPPED {file_path} (no match)")
             continue
 
