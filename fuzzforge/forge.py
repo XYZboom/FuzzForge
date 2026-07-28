@@ -167,35 +167,41 @@ class FuzzForge:
                 for line in report.split("\n"):
                     print(f"    {line}")
 
-            # 4. Tool-using Agent: give LLM tools to read/search/patch
-            from fuzzforge.agent_tools import run_tool_loop
-            from fuzzforge.healer import call_llm_for_fix
-
+            # 4. Fix Agent: compact prompt with pre-fetched info
+            from fuzzforge.healer import call_llm_for_fix, parse_fix_response, apply_patches
+            
+            tgen_src = Path(f"{self.output_dir}/src/main/kotlin/com/fuzzforge/translator/Translator.kt").read_text()[:2000] if Path(f"{self.output_dir}/src/main/kotlin/com/fuzzforge/translator/Translator.kt").exists() else ""
+            ggen_src = Path(f"{self.output_dir}/src/main/kotlin/com/fuzzforge/generator/Generator.kt").read_text()[:1500] if Path(f"{self.output_dir}/src/main/kotlin/com/fuzzforge/generator/Generator.kt").exists() else ""
+            
             cpp_code = ""
             cpp_files = sorted(Path(self.output_dir).glob("reports/temp/*.cpp"))
             if cpp_files:
-                cpp_code = Path(cpp_files[0]).read_text()[:2000]
+                cpp_code = "\n".join(Path(cpp_files[0]).read_text().split("\n")[:30])
 
-            tool_prompt = (
-                f"Fix the fuzzer generator. Generated C++ fails to compile with g++.\n\n"
-                f"COMPILATION ERRORS:\n{stderr[:3000]}\n\n"
-                f"CLASSIFIED ISSUES:\n{report if report else 'N/A'}\n\n"
-                f"GENERATED C++ (first 50 lines):\n"
-                + "\n".join(cpp_code.split("\n")[:50]) + "\n\n"
-                f"YOUR TASK:\n"
-                f"1. Load skill fuzzforge-cpp-translator with skill_view\n"
-                f"2. Read the current Translator.kt with read_file\n"
-                f"3. Read the Generator.kt with read_file\n"
-                f"4. Use patch to fix the root cause\n"
-                f"5. Verify with: cd {self.output_dir} && ./gradlew compileKotlin --no-daemon -q\n"
+            fix_prompt = (
+                f"FIX the fuzzer generator. C++ compilation errors:\n\n"
+                f"{stderr[:2000]}\n\n"
+                f"Generated C++:\n{cpp_code}\n\n"
+                f"Translator.kt:\n{tgen_src}\n\n"
+                f"Generator.kt:\n{ggen_src}\n\n"
+                f"Rules: template<typename T>, not template<T>; can't inherit from int/bool/char/float; "
+                f"non-void functions need return 0; no static virtual; union can't have virtual.\n"
+                f"Output JSON patches. Fix Translator.kt visitor output and Generator.kt generation logic."
             )
 
             try:
-                print(f"  [SemanticLoop] Running tool-using agent...")
-                final = run_tool_loop(tool_prompt, max_turns=4, llm_call_fn=call_llm_for_fix)
-                print(f"  [SemanticLoop] Agent finished: {final[:200]}")
+                print(f"  [SemanticLoop] Calling GLM-5.2 for patches...")
+                raw = call_llm_for_fix(fix_prompt)
+                patches = parse_fix_response(raw)
+                if not patches:
+                    print(f"  [SemanticLoop] LLM returned no patches")
+                    continue
+                print(f"  [SemanticLoop] LLM returned {len(patches)} patch(es)")
+                applied = apply_patches(self.output_dir, patches)
+                for a in applied:
+                    print(f"    {a}")
             except Exception as e:
-                print(f"  [SemanticLoop] Agent failed: {e}")
+                print(f"  [SemanticLoop] Fix failed: {e}")
                 continue
 
         print(f"  [SemanticLoop] Exhausted after {max_iterations} iterations")
