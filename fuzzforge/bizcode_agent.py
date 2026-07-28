@@ -191,7 +191,11 @@ class CppGenVisitor : UirDefaultVisitor<Unit, StringBuilder>() {{
         val kind = if (cd.classKind == ClassKind.UNION) "union" else "class"
         data.append("$kind ${{cd.name}}")
         if (cd.superType != null) {{
-            data.append(" : public ${{cd.superType!!.name}}")
+            val superName = when (cd.superType) {{
+                is UirFundamentalType -> (cd.superType as UirFundamentalType).name
+                else -> "int"
+            }}
+            data.append(" : public $superName")
         }}
         data.appendLine(" {{")
         data.appendLine("public:")
