@@ -470,6 +470,12 @@ CLASS_DECLARATION_KNOWLEDGE: dict[str, Any] = {
             "Java: 'final' for non-mutable properties, no top-level functions (use static methods).",
             "Scala: 'val'/'var' for properties, 'def' for functions, ':' for type annotations.",
             "Groovy: largely compatible with Java syntax; can reuse the Java printer.",
+            "C++: template needs 'typename' keyword (template<typename T>, not template<T>).",
+            "C++: cannot inherit from fundamental types (int, float, bool, etc.) — only allow class types.",
+            "C++: non-void functions must have a return statement.",
+            "C++: static virtual functions are not allowed.",
+            "C++: unions cannot have virtual functions.",
+            "C++: pure virtual functions (= 0) make the class abstract.",
         ],
     },
     "validator_pattern": {

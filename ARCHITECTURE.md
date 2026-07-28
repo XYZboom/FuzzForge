@@ -1,108 +1,56 @@
-# FuzzForge Architecture
+# FuzzForge Multi-Agent Architecture
 
-## Inspiration from WhiteFox
-
-WhiteFox ([Liu et al. 2024](https://arxiv.org/abs/2406.09264)) is a white-box compiler fuzzing agent.
-Its agent architecture uses three phases:
-
-1. **Planning** — LLM analyzes source code, designs test strategy
-2. **Generation** — LLM generates test programs targeting specific code paths
-3. **Feedback** — execution results feed back to refine the next iteration
-
-We adapt this for **black-box fuzzer code generation**:
-
-| Aspect | WhiteFox | FuzzForge |
-|--------|----------|-----------|
-| Target knowledge | Source code analysis | API surface / docs |
-| Output | Test programs (inputs) | Fuzzer framework (code) |
-| Mode | White-box | Black-box |
-| Loop trigger | Coverage feedback | Compilation errors |
-| Knowledge source | Code paths | IR design patterns |
-
-## FuzzForge Agent Architecture
-
+## Core Loop (Small Loop): Semantic Validation Loop
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     FuzzForge Agent (Orchestrator)              │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  Phase 1: Target Analysis (scanner)                             │
-│  ┌─────────────────────────────────────────────────────┐       │
-│  │  - Scan target API/compiler surface                  │       │
-│  │  - Identify op kinds, type system, constraints       │       │
-│  │  - Build "domain vocabulary" for IR design           │       │
-│  └──────────────┬──────────────────────────────────────┘       │
-│                 │                                              │
-│                 ▼                                              │
-│  Phase 2: IR Design (ir_designer)                              │
-│  ┌─────────────────────────────────────────────────────┐       │
-│  │  - Define TreeBuilder elements (WhiteFox "planning") │       │
-│  │  - Design op/type/attr enums                        │       │
-│  │  - Design GeneratorConfig                           │       │
-│  │  - Output: IR design JSON                           │       │
-│  └──────────────┬──────────────────────────────────────┘       │
-│                 │                                              │
-│                 ▼                                              │
-│  Phase 3: Code Generation (codegen)                             │
-│  ┌─────────────────────────────────────────────────────┐       │
-│  │  - Generate Kotlin project scaffold                 │       │
-│  │  - Generate TreeBuilder.kt from IR design           │       │
-│  │  - Generate enums, Generator, Translator, Runner    │       │
-│  │  - Generate Gradle build files                      │       │
-│  └──────────────┬──────────────────────────────────────┘       │
-│                 │                                              │
-│                 ▼                                              │
-│  Phase 4: Build & Fix (healer)                                 │
-│  ┌─────────────────────────────────────────────────────┐       │
-│  │  Build Failed? ───► LLM reads errors, outputs patches       │
-│  │  │                                                     │       │
-│  │  └──► Iterate until build succeeds or max_attempts     │       │
-│  └─────────────────────────────────────────────────────┘       │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
+Generator Agent → Translation Agent → Compiler Agent → Classifier Agent → Fix Loop
 ```
 
-## Key Design Principles
+## Agents
 
-### 1. Black-box IR Design
+### 1. Generator Agent
+- **Role**: Generates IR programs (classes, functions, types)
+- **Knowledge**: IR structure, builder API, randomization strategies
+- **Input**: IR design JSON, GeneratorConfig
+- **Output**: UirProgram IR tree
 
-Unlike WhiteFox which reads source code, FuzzForge designs IR from:
-- Target description (user-provided)
-- Embedded knowledge base (proven patterns from real fuzzers)
-- Template presets (computation_graph / class_declaration)
+### 2. Translation Agent
+- **Role**: Translates IR to C++ source code
+- **Knowledge**: C++ syntax rules, visitor pattern, type system
+- **Input**: UirProgram IR tree
+- **Output**: C++ source code string
 
-### 2. Code Generation, Not Test Generation
+### 3. Compiler Agent
+- **Role**: Invokes g++/clang++, collects ALL errors and warnings
+- **Knowledge**: Compiler flags, error output parsing
+- **Input**: C++ source code
+- **Output**: Compilation result (exit code, stdout, stderr)
 
-FuzzForge generates a **fuzzer framework** (Kotlin project), not test programs.
-The generated fuzzer will later generate test programs at runtime.
+### 4. Classifier Agent
+- **Role**: Classifies each error as:
+  - **Generator Bug**: Bug in the fuzzer's code generation logic
+  - **Compiler Bug**: Bug in the C++ compiler being tested
+  - **Semantic Issue**: Known C++ limitation (e.g. can't inherit from int)
+- **Knowledge**: C++ standards, common compiler bugs, fuzzer design patterns
+- **Input**: Compilation error, the generated code
+- **Output**: Error classification with fix suggestions
 
-### 3. Compilation Feedback Loop
+## Knowledge Sharing
+All agents share:
+- `tree_api.py`: Tree-generator API documentation (what is auto-generated, what can be modified)
+- `knowledge.py`: Fuzzing design patterns extracted from real projects
+- `fuzzforge-agent` skill: Agent's own skill documentation
 
-The healer loop mirrors WhiteFox's execution feedback:
-- WhiteFox: test program crash → refine test
-- FuzzForge: generated code doesn't compile → LLM patches the code
+## Fix Loop
+1. Generator produces IR → Translation Agent produces C++
+2. Compiler Agent compiles with g++, collects ALL errors
+3. Classifier Agent classifies each error
+4. If Generator Bug → Fix Generator Agent's knowledge
+5. If Compiler Bug → Save to BugCollector
+6. If Semantic Issue → Add to C++ knowledge base
+7. Repeat until 100% of generated programs are semantically valid C++
 
-### 4. Agent Capabilities
-
-The agent (LLM) is responsible for:
-- **IR Design**: Proposing element hierarchies, types, ops
-- **Code Fixing**: Reading build errors and outputting precise patches
-- **Knowledge Application**: Using embedded patterns to avoid common mistakes
-
-### 5. Extensibility
-
-New IR modes can be added via:
-- New knowledge entries in `knowledge.py`
-- New templates in `templates/`
-- New LLM provider for the fix loop
-
-## Component Responsibilities
-
-| Component | Role | WhiteFox Analog |
-|-----------|------|-----------------|
-| `scanner.py` | Target analysis | Source code analysis |
-| `ir_designer.py` | IR planning | Test strategy design |
-| `codegen.py` | Code generation | Test program generation |
-| `healer.py` | Build-fix loop | Execution feedback loop |
-| `knowledge.py` | Pattern knowledge | Compiler IR knowledge |
-| `forge.py` | Orchestrator | Agent controller |
+## Key Principle
+ALL errors are collected. No errors are ignored. Every error is either:
+- A bug in FuzzForge's generator (must fix the generator)
+- A bug in the compiler being tested (save to bug collector)
+- A known C++ limitation (add to knowledge base)

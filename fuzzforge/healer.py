@@ -12,6 +12,7 @@ from typing import Any
 
 from fuzzforge.runner import run_gradle, diagnose_failure
 from fuzzforge.tree_api import build_fix_guidelines
+from fuzzforge.classifier_agent import classify_error, generate_fix_report
 
 # Read LLM config from Hermes config
 def _load_sf_config():
@@ -209,7 +210,14 @@ def fix_and_rebuild(
     llm_cmd: str | None = None,
     max_iterations: int = 5,
 ) -> dict[str, Any]:
-    """Auto-fix loop: build -> diagnose -> fix via real LLM -> rebuild."""
+    """Auto-fix loop: build -> classify -> fix via real LLM -> rebuild.
+
+    Multi-agent loop:
+      1. Compiler Agent: build with g++, collect ALL errors
+      2. Classifier Agent: classify each error as generator/compiler/semantic
+      3. LLM (BizCode Agent): generate patches for generator bugs
+      4. Repeat until 100% of generated programs compile
+    """
     print(f"\n{'='*60}")
     print(f"  Auto-Fix Loop: max {max_iterations} iterations")
     print(f"{'='*60}")
@@ -223,11 +231,27 @@ def fix_and_rebuild(
             return {"success": True, "iterations": iteration, "build_result": result}
 
         print(f"  Build failed (exit code {result['return_code']})")
-        issues = diagnose_failure(result)
-        for issue in issues:
-            print(f"    - {issue}")
+
+        # Classifier Agent: classify the errors
+        stderr = result.get("stderr", "")
+        classified = classify_error(stderr, "")
+        if not classified:
+            # Fallback to old diagnose
+            issues = diagnose_failure(result)
+            for issue in issues:
+                print(f"    - {issue}")
+        else:
+            fix_report = generate_fix_report(classified)
+            print(f"  Classifier Agent report:")
+            for line in fix_report.split("\n"):
+                print(f"    {line}")
 
         prompt = build_fix_prompt(project_dir, result["stderr"], result["stdout"], design)
+
+        # Prepend classifier report to the prompt
+        if classified:
+            report = generate_fix_report(classified)
+            prompt = f"ERROR CLASSIFICATION:\n{report}\n\n{prompt}"
 
         try:
             print(f"  Calling GLM-5.2 for fixes...")
