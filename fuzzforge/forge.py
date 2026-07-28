@@ -131,12 +131,10 @@ class FuzzForge:
         for iteration in range(1, max_iterations + 1):
             print(f"\n  --- Semantic Iteration {iteration}/{max_iterations} ---")
 
-            # 1. Generator Agent + Translation Agent: produce C++ code
             out = subprocess.run(
                 ["./gradlew", ":run", "--args", "generate -n 10", "--no-daemon", "-q"],
                 cwd=self.output_dir, capture_output=True, text=True, timeout=60,
             )
-            # 2. Compiler Agent: compile with g++
             compile_out = subprocess.run(
                 ["./gradlew", ":run", "--args", "run -n 10", "--no-daemon", "-q"],
                 cwd=self.output_dir, capture_output=True, text=True, timeout=120,
@@ -145,7 +143,6 @@ class FuzzForge:
             stderr = compile_out.stderr
             stdout = compile_out.stdout
 
-            # Check if all compiled OK
             success_count = 0
             for line in stdout.split("\n"):
                 if "compiled OK" in line:
@@ -162,7 +159,6 @@ class FuzzForge:
 
             print(f"  [SemanticLoop] {success_count}/10 compiled OK — errors found")
 
-            # 3. Classifier Agent: classify errors
             classified = classify_error(stderr, "")
             report = ""
             if classified:
@@ -171,25 +167,35 @@ class FuzzForge:
                 for line in report.split("\n"):
                     print(f"    {line}")
 
-            # 4. Healer Agent: call LLM to fix bizcode
-            from fuzzforge.healer import call_llm_for_fix, parse_fix_response, apply_patches, build_fix_prompt
-            prompt = f"ERROR CLASSIFICATION:\n{report}\n\n" if report else ""
-            prompt += build_fix_prompt(self.output_dir, stderr, stdout, self.design)
+            # 4. Tool-using Agent: give LLM tools to read/search/patch
+            from fuzzforge.agent_tools import run_tool_loop
+            from fuzzforge.healer import call_llm_for_fix
+
+            cpp_code = ""
+            cpp_files = sorted(Path(self.output_dir).glob("reports/temp/*.cpp"))
+            if cpp_files:
+                cpp_code = Path(cpp_files[0]).read_text()[:2000]
+
+            tool_prompt = (
+                f"Fix the fuzzer generator. Generated C++ fails to compile with g++.\n\n"
+                f"COMPILATION ERRORS:\n{stderr[:3000]}\n\n"
+                f"CLASSIFIED ISSUES:\n{report if report else 'N/A'}\n\n"
+                f"GENERATED C++ (first 50 lines):\n"
+                + "\n".join(cpp_code.split("\n")[:50]) + "\n\n"
+                f"YOUR TASK:\n"
+                f"1. Load skill fuzzforge-cpp-translator with skill_view\n"
+                f"2. Read the current Translator.kt with read_file\n"
+                f"3. Read the Generator.kt with read_file\n"
+                f"4. Use patch to fix the root cause\n"
+                f"5. Verify with: cd {self.output_dir} && ./gradlew compileKotlin --no-daemon -q\n"
+            )
 
             try:
-                print(f"  [SemanticLoop] Calling GLM-5.2 to fix generator...")
-                raw = call_llm_for_fix(prompt)
-                patches = parse_fix_response(raw)
-                if not patches:
-                    print(f"  [SemanticLoop] LLM returned no patches")
-                    print(f"  Raw: {raw[:500]}")
-                    continue
-                print(f"  [SemanticLoop] LLM returned {len(patches)} patch(es)")
-                applied = apply_patches(self.output_dir, patches)
-                for a in applied:
-                    print(f"    {a}")
+                print(f"  [SemanticLoop] Running tool-using agent...")
+                final = run_tool_loop(tool_prompt, max_turns=8, llm_call_fn=call_llm_for_fix)
+                print(f"  [SemanticLoop] Agent finished: {final[:200]}")
             except Exception as e:
-                print(f"  [SemanticLoop] Fix failed: {e}")
+                print(f"  [SemanticLoop] Agent failed: {e}")
                 continue
 
         print(f"  [SemanticLoop] Exhausted after {max_iterations} iterations")
