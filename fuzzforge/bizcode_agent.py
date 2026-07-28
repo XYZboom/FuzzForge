@@ -74,7 +74,7 @@ class {base}Generator(
         val numFuncs = random.nextInt(config.minFunctionsPerClass, config.maxFunctionsPerClass + 1)
         val funcs = mutableListOf<UirFunctionDeclaration>()
         for (i in 0 until numFuncs) {{
-            funcs.add(generateFunction("m$i", name))
+            funcs.add(generateFunction("m$i", name, isUnion))
         }}
 
         val hasSuperType = false
@@ -101,7 +101,7 @@ class {base}Generator(
         }}
     }}
 
-    private fun generateFunction(name: String, className: String): UirFunctionDeclaration {{
+    private fun generateFunction(name: String, className: String, isUnion: Boolean = false): UirFunctionDeclaration {{
         val rawVirtual = random.nextFloat() < config.virtualProbability
                 val rawStatic = random.nextFloat() < 0.2f
                 val rawConst = random.nextFloat() < 0.3f
