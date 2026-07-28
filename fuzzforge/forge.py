@@ -91,7 +91,7 @@ class FuzzForge:
 
         return {"status": "generated", "output_dir": self.output_dir, "design": self.design}
 
-    def _run_cpp_validation_loop(self, max_iterations=5):
+    def _run_cpp_validation_loop(self, max_iterations=3):
         """Two-phase C++ validation: syntax first, then semantics."""
         if not self.output_dir or not self.design:
             print(f"  [CppValidation] Skipped: no project to validate")
