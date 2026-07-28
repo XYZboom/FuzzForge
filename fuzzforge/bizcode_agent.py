@@ -376,6 +376,7 @@ import com.github.ajalt.clikt.output.MordantHelpFormatter
 import com.fuzzforge.config.RunConfig
 import com.fuzzforge.generator.{base}Generator
 import com.fuzzforge.runner.{base}Runner
+import com.fuzzforge.translator.{base}Translator
 import kotlinx.coroutines.runBlocking
 
 class {base}Command : CliktCommand(name = "{pn}", help = "{desc}") {{
