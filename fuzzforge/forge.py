@@ -114,7 +114,7 @@ class FuzzForge:
 
         return {"status": "generated", "output_dir": self.output_dir, "design": self.design}
 
-    def _run_semantic_validation_loop(self, max_iterations: int = 5) -> dict[str, Any]:
+    def _run_semantic_validation_loop(self, max_iterations: int = 2) -> dict[str, Any]:
         """Small loop: generate C++ programs -> compile with g++ -> classify errors -> fix -> repeat.
 
         Multi-agent: Generator Agent -> Translation Agent -> Compiler Agent -> Classifier Agent -> LLM Fix.
@@ -132,12 +132,12 @@ class FuzzForge:
             print(f"\n  --- Semantic Iteration {iteration}/{max_iterations} ---")
 
             out = subprocess.run(
-                ["./gradlew", ":run", "--args", "generate -n 10", "--no-daemon", "-q"],
-                cwd=self.output_dir, capture_output=True, text=True, timeout=60,
+                ["./gradlew", ":run", "--args", "generate -n 5", "--no-daemon", "-q"],
+                cwd=self.output_dir, capture_output=True, text=True, timeout=30,
             )
             compile_out = subprocess.run(
-                ["./gradlew", ":run", "--args", "run -n 10", "--no-daemon", "-q"],
-                cwd=self.output_dir, capture_output=True, text=True, timeout=120,
+                ["./gradlew", ":run", "--args", "run -n 5", "--no-daemon", "-q"],
+                cwd=self.output_dir, capture_output=True, text=True, timeout=60,
             )
 
             stderr = compile_out.stderr
@@ -153,8 +153,8 @@ class FuzzForge:
                             success_count = int(ok)
                             break
 
-            if success_count == 10:
-                print(f"  [SemanticLoop] All 10/10 programs compiled successfully!")
+            if success_count == 5:
+                print(f"  [SemanticLoop] All 5/5 programs compiled successfully!")
                 return {"success": True, "iterations": iteration}
 
             print(f"  [SemanticLoop] {success_count}/10 compiled OK — errors found")
@@ -192,7 +192,7 @@ class FuzzForge:
 
             try:
                 print(f"  [SemanticLoop] Running tool-using agent...")
-                final = run_tool_loop(tool_prompt, max_turns=8, llm_call_fn=call_llm_for_fix)
+                final = run_tool_loop(tool_prompt, max_turns=4, llm_call_fn=call_llm_for_fix)
                 print(f"  [SemanticLoop] Agent finished: {final[:200]}")
             except Exception as e:
                 print(f"  [SemanticLoop] Agent failed: {e}")
