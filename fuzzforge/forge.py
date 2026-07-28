@@ -14,7 +14,6 @@ from fuzzforge.bizcode_agent import generate_business_code
 from fuzzforge.runner import run_gradle, diagnose_failure
 from fuzzforge.healer import fix_and_rebuild
 from fuzzforge.utils import print_header, print_step
-from fuzzforge.tree_api import build_fix_guidelines
 
 
 class FuzzForge:
@@ -121,7 +120,6 @@ class FuzzForge:
         Multi-agent: Generator Agent -> Translation Agent -> Compiler Agent -> Classifier Agent -> LLM Fix.
         """
         from fuzzforge.classifier_agent import classify_error, generate_fix_report
-        from fuzzforge.healer import call_llm_for_fix, parse_fix_response, apply_patches, build_fix_prompt
 
         if not self.output_dir or not self.design:
             print(f"  [SemanticLoop] Skipped: no project to validate")
@@ -174,6 +172,7 @@ class FuzzForge:
                     print(f"    {line}")
 
             # 4. Healer Agent: call LLM to fix bizcode
+            from fuzzforge.healer import call_llm_for_fix, parse_fix_response, apply_patches, build_fix_prompt
             prompt = f"ERROR CLASSIFICATION:\n{report}\n\n" if report else ""
             prompt += build_fix_prompt(self.output_dir, stderr, stdout, self.design)
 
@@ -183,6 +182,7 @@ class FuzzForge:
                 patches = parse_fix_response(raw)
                 if not patches:
                     print(f"  [SemanticLoop] LLM returned no patches")
+                    print(f"  Raw: {raw[:500]}")
                     continue
                 print(f"  [SemanticLoop] LLM returned {len(patches)} patch(es)")
                 applied = apply_patches(self.output_dir, patches)
