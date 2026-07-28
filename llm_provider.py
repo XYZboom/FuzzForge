@@ -14,7 +14,6 @@ design = {
     "description": "C++ compiler fuzzer — generates random C++ class/function declarations to test g++ and clang",
     "ir_mode": "class_declaration",
     "tree_builder_elements": [
-        {"var_name": "element", "element_name": "Element", "kind": "Other", "parent": None, "interface_kind": "Interface", "fields": []},
         {"var_name": "namedElement", "element_name": "NamedElement", "kind": "Other", "parent": None, "interface_kind": "Interface", "fields": [{"name": "name", "type": "String", "is_child": False, "nullable": False, "is_mutable": True, "with_transform": False, "with_replace": False, "list_base_type": None}]},
         {"var_name": "declaration", "element_name": "Declaration", "kind": "Other", "parent": "namedElement", "interface_kind": "Interface", "fields": [{"name": "language", "type": "Language", "is_child": False, "nullable": False, "is_mutable": True, "with_transform": False, "with_replace": False, "list_base_type": None}]},
         {"var_name": "program", "element_name": "Program", "kind": "Other", "parent": None, "interface_kind": "Interface", "fields": []},
