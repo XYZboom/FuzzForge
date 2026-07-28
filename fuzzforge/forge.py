@@ -21,20 +21,11 @@ class FuzzForge:
         self.design: dict[str, Any] | None = None
         self.output_dir: str | None = None
 
-    def create(
-        self,
-        target: str,
-        output_dir: str,
-        mode: str = "computation_graph",
-        provider: str = "auto",
-        skip_build: bool = False,
-        auto_fix: bool = False,
-    ) -> dict[str, Any]:
+    def create(self, target, output_dir, mode="computation_graph", provider="auto", skip_build=False, auto_fix=False):
         provider = provider or "auto"
         steps = 5 if auto_fix else (3 if not skip_build else 2)
         step = 0
 
-        # Step 1: Design IR
         step += 1
         print_header(f"Step {step}/{steps}: Design IR Structure")
         print_step(step, steps, f"Designing IR for: {target}")
@@ -52,7 +43,6 @@ class FuzzForge:
         base = Path(output_dir)
         base.mkdir(parents=True, exist_ok=True)
 
-        # Step 2: TreeGen Agent — set up tree infrastructure
         step += 1
         print_header(f"Step {step}/{steps}: TreeGen Agent — IR Infrastructure")
         print_step(step, steps, "Setting up tree-generator...")
@@ -62,7 +52,6 @@ class FuzzForge:
         else:
             print(f"  [TreeGen] Warning: generateTree may need tree-generator-common.jar")
 
-        # Step 3: BizCode Agent — generate business code
         step += 1
         print_header(f"Step {step}/{steps}: BizCode Agent — Business Code")
         print_step(step, steps, "Generating business code...")
@@ -72,7 +61,6 @@ class FuzzForge:
             rel = Path(p).relative_to(base)
             print(f"    - {rel}")
 
-        # Step 4: Build (optional)
         if not skip_build:
             step += 1
             print_header(f"Step {step}/{steps}: Build Project")
@@ -81,22 +69,16 @@ class FuzzForge:
 
             if result["success"]:
                 print(f"  Build succeeded in {result['elapsed_seconds']}s!")
-
-                # Step 5: C++ Validation Loop (two-phase) — optional
                 if auto_fix:
                     step += 1
                     print_header(f"Step {step}/{steps}: C++ Validation (Syntax + Semantic)")
                     print_step(step, steps, "Validating generated C++ code...")
                     self._run_cpp_validation_loop()
-
             else:
                 print(f"  Build failed in {result['elapsed_seconds']}s (exit code {result['return_code']})")
-
                 if auto_fix:
                     print(f"  Auto-fix enabled! Starting healer loop...")
-                    heal_result = fix_and_rebuild(
-                        self.output_dir, self.design, max_iterations=5,
-                    )
+                    heal_result = fix_and_rebuild(self.output_dir, self.design, max_iterations=5)
                     result = heal_result.get("build_result", result)
                 else:
                     issues = diagnose_failure(result)
@@ -105,36 +87,25 @@ class FuzzForge:
                         print(f"    - {issue}")
                     print(f"  !!! BUILD FAILED !!!")
 
-            return {
-                "status": "built" if result["success"] else "build_failed",
-                "output_dir": self.output_dir,
-                "design": self.design,
-                "build_result": result,
-            }
+            return {"status": "built" if result["success"] else "build_failed", "output_dir": self.output_dir, "design": self.design, "build_result": result}
 
         return {"status": "generated", "output_dir": self.output_dir, "design": self.design}
 
-    def _run_cpp_validation_loop(self, max_iterations: int = 5) -> dict[str, Any]:
-        """Two-phase C++ validation: syntax first, then semantics.
-
-        Phase 1 — Syntax: Fix Translator.kt until 100% of programs have valid C++ syntax.
-        Phase 2 — Semantic: Fix Generator.kt until 100% of programs are semantically valid.
-        """
+    def _run_cpp_validation_loop(self, max_iterations=5):
+        """Two-phase C++ validation: syntax first, then semantics."""
         if not self.output_dir or not self.design:
             print(f"  [CppValidation] Skipped: no project to validate")
             return {"success": False}
 
         output_dir = self.output_dir
 
-        # Phase 1: Syntax Validation
         print(f"\n{'='*60}")
         print(f"  Phase 1: Syntax Validation")
         print(f"  Fixing Translator.kt for valid C++ syntax")
         print(f"{'='*60}")
 
         syntax_ok = self._run_validation_phase(
-            phase_name="Syntax",
-            max_iterations=max_iterations,
+            phase_name="Syntax", max_iterations=max_iterations,
             file_to_fix="Translator.kt",
             fix_instructions=(
                 "Fix the Translator.kt C++ output. Syntax errors mean the generated C++ text is malformed.\n"
@@ -148,15 +119,13 @@ class FuzzForge:
             print(f"  [CppValidation] Syntax validation failed")
             return {"success": False, "phase": "syntax"}
 
-        # Phase 2: Semantic Validation
         print(f"\n{'='*60}")
         print(f"  Phase 2: Semantic Validation")
         print(f"  Fixing Generator.kt for valid C++ semantics")
         print(f"{'='*60}")
 
         semantic_ok = self._run_validation_phase(
-            phase_name="Semantic",
-            max_iterations=max_iterations,
+            phase_name="Semantic", max_iterations=max_iterations,
             file_to_fix="Generator.kt",
             fix_instructions=(
                 "Fix the Generator.kt IR construction. Semantic errors mean the C++ text is syntactically valid "
@@ -178,15 +147,9 @@ class FuzzForge:
             print(f"  [CppValidation] Semantic validation failed")
             return {"success": False, "phase": "semantic"}
 
-    def _run_validation_phase(
-        self,
-        phase_name: str,
-        max_iterations: int,
-        file_to_fix: str,
-        fix_instructions: str,
-    ) -> bool:
-        """Run a single validation phase (syntax or semantic)."""
-        from fuzzforge.healer import call_llm_for_fix, parse_fix_response, apply_patches
+    def _run_validation_phase(self, phase_name, max_iterations, file_to_fix, fix_instructions):
+        """Run a single validation phase. Full file replacement strategy."""
+        from fuzzforge.healer import call_llm_for_fix
         from fuzzforge.agent_tools import tool_skill_view
 
         output_dir = self.output_dir
@@ -195,13 +158,10 @@ class FuzzForge:
         for iteration in range(1, max_iterations + 1):
             print(f"\n  --- {phase_name} Iteration {iteration}/{max_iterations} ---")
 
-            # Generate programs
             subprocess.run(
                 ["./gradlew", ":run", "--args", "generate -n 5", "--no-daemon", "-q"],
                 cwd=output_dir, capture_output=True, text=True, timeout=30,
             )
-
-            # Compile with g++
             compile_out = subprocess.run(
                 ["./gradlew", ":run", "--args", "run -n 5", "--no-daemon", "-q"],
                 cwd=output_dir, capture_output=True, text=True, timeout=60,
@@ -211,20 +171,13 @@ class FuzzForge:
             stdout = compile_out.stdout
             error_lines = stderr.split("\n")
 
-            # Check if errors are syntax or semantic
-            has_syntax_error = any("error:" in l and (
-                "expected class-name" in l or "expected" in l or
-                "template" in l or "declared" in l or
-                "Syntax error" in l or "Unexpected" in l
-            ) for l in error_lines if "error:" in l)
-            has_semantic_only = any("error:" in l and not (
-                "expected class-name" in l or "expected" in l or
-                "template" in l or "declared" in l or
-                "Syntax error" in l or "Unexpected" in l
-            ) for l in error_lines if "error:" in l)
-
-            if phase_name == "Syntax" and not has_syntax_error and has_semantic_only:
-                print(f"  [{phase_name}] No syntax errors found — remaining errors are semantic. Passing.")
+            # Check for syntax errors
+            has_syntax_error = any(
+                "error:" in l and ("expected" in l or "template" in l or "declared" in l or "Syntax error" in l or "Unexpected" in l)
+                for l in error_lines
+            )
+            if phase_name == "Syntax" and not has_syntax_error:
+                print(f"  [{phase_name}] No syntax errors found. Passing to semantic phase.")
                 return True
 
             # Check success count
@@ -237,15 +190,12 @@ class FuzzForge:
                             ok, total = p.split("/")
                             success_count = int(ok)
                             break
-
             if success_count == 5:
                 print(f"  [{phase_name}] All 5/5 programs passed!")
                 return True
-
-            print(f"  [{phase_name}] {success_count}/5 passed — errors found")
+            print(f"  [{phase_name}] {success_count}/5 passed")
 
             # Deduplicate error patterns
-            error_lines = stderr.split("\n")
             error_patterns = []
             seen = set()
             for line in error_lines:
@@ -263,28 +213,31 @@ class FuzzForge:
             trans_skill = tool_skill_view("fuzzforge-cpp-translator").get("content", "")[:1500]
 
             # Read current sources
-            tgen_src = Path(f"{output_dir}/src/main/kotlin/com/fuzzforge/translator/Translator.kt").read_text() if Path(f"{output_dir}/src/main/kotlin/com/fuzzforge/translator/Translator.kt").exists() else ""
-            ggen_src = Path(f"{output_dir}/src/main/kotlin/com/fuzzforge/generator/Generator.kt").read_text() if Path(f"{output_dir}/src/main/kotlin/com/fuzzforge/generator/Generator.kt").exists() else ""
+            tgen_path = Path(f"{output_dir}/src/main/kotlin/com/fuzzforge/translator/Translator.kt")
+            ggen_path = Path(f"{output_dir}/src/main/kotlin/com/fuzzforge/generator/Generator.kt")
+            tgen_src = tgen_path.read_text() if tgen_path.exists() else ""
+            ggen_src = ggen_path.read_text() if ggen_path.exists() else ""
+
+            if file_to_fix == "Translator.kt":
+                focus_src = tgen_src
+                other_src = ggen_src[:1000]
+                target_path = tgen_path
+            else:
+                focus_src = ggen_src
+                other_src = tgen_src[:1000]
+                target_path = ggen_path
 
             cpp_code = ""
             cpp_files = sorted(pdir.glob("reports/temp/*.cpp"))
             if cpp_files:
                 cpp_code = "\n".join(Path(cpp_files[0]).read_text().split("\n")[:30])
 
-            # Focus on the right file
-            if file_to_fix == "Translator.kt":
-                focus_src = tgen_src[:2500]
-                other_src = ggen_src[:1000]
-            else:
-                focus_src = ggen_src[:2500]
-                other_src = tgen_src[:1000]
-
             # Reasoning chain prompt
             reasoning_prompt = (
                 f"Trace each C++ compilation error back to its root cause.\n\n"
                 f"## Step 1: The Errors\n{summary}\n\n"
                 f"## Step 2: Generated C++ Code (first 30 lines)\n{cpp_code}\n\n"
-                f"## Step 3: FILE TO FIX: {file_to_fix}\n{focus_src}\n\n"
+                f"## Step 3: FILE TO FIX: {file_to_fix}\n{focus_src[:2500]}\n\n"
                 f"## Step 4: Other file (for reference)\n{other_src}\n\n"
                 f"## Step 5: C++ Rules\n{trans_skill}\n\n"
                 f"## Instructions\n{fix_instructions}\n\n"
@@ -294,7 +247,7 @@ class FuzzForge:
                 f"  -> Invalid C++ construct in output\n"
                 f"  -> Which code in {file_to_fix} generates it?\n"
                 f"  -> ROOT CAUSE: exact change to make\n\n"
-                f"Output your analysis first, then JSON patches."
+                f"Output your analysis first, then the COMPLETE fixed file content."
             )
 
             try:
@@ -302,55 +255,53 @@ class FuzzForge:
                 analysis = call_llm_for_fix(reasoning_prompt)
                 print(f"  [{phase_name}] Analysis: {analysis[:400]}")
 
-                # Generate patches
                 patch_prompt = (
-                    f"Based on your analysis, output JSON patches to fix {file_to_fix}.\n\n"
+                    f"Based on your analysis, output the COMPLETE fixed version of {file_to_fix}.\n\n"
                     f"YOUR ANALYSIS:\n{analysis[:2000]}\n\n"
-                    f"CURRENT {file_to_fix}:\n{focus_src}\n\n"
-                    f"Output ONLY a JSON array of patches. NO other text.\n"
-                    f'Each patch: {{"file_path": "src/main/kotlin/com/fuzzforge/.../File.kt", '
-                    f'"old_string": "exact text to replace", "new_string": "replacement text"}}'
+                    f"CURRENT BUGGY {file_to_fix}:\n{focus_src[:2500]}\n\n"
+                    f"Output ONLY the COMPLETE fixed file content. NO markdown fences, NO JSON, NO other text.\n"
+                    f"The file must be valid Kotlin code that compiles and produces valid C++ output.\n"
+                    f"Write the entire file from the package declaration to the last closing brace."
                 )
 
-                print(f"  [{phase_name}] Generating patches...")
+                print(f"  [{phase_name}] Generating full file replacement...")
                 raw = call_llm_for_fix(patch_prompt)
-                patches = parse_fix_response(raw)
-                if not patches:
-                    print(f"  [{phase_name}] No patches")
-                    continue
-                print(f"  [{phase_name}] Applying {len(patches)} patch(es)")
-                applied = apply_patches(output_dir, patches)
-                for a in applied:
-                    print(f"    {a}")
+                raw = raw.strip()
+                if raw.startswith("```"):
+                    lines = raw.split("\n")
+                    if lines[0].startswith("```"):
+                        lines = lines[1:]
+                    if lines and lines[-1].strip().startswith("```"):
+                        lines = lines[:-1]
+                    raw = "\n".join(lines)
 
-                # Verify Kotlin still compiles after patches
-                print(f"  [{phase_name}] Verifying Kotlin compilation...")
-                kt_check = subprocess.run(
-                    ["./gradlew", "compileKotlin", "--no-daemon", "-q"],
-                    cwd=output_dir, capture_output=True, text=True, timeout=60,
-                )
-                if kt_check.returncode != 0:
-                    print(f"  [{phase_name}] Patch broke Kotlin compilation! Reverting...")
-                    # Revert by re-applying patches in reverse
-                    for p in reversed(patches):
-                        old = p.get("new_string", "")
-                        new = p.get("old_string", "")
-                        if old and new:
-                            fp = Path(f"{output_dir}/{p['file_path']}")
-                            if fp.exists():
-                                content = fp.read_text()
-                                if old in content:
-                                    fp.write_text(content.replace(old, new, 1))
-                                    print(f"    REVERTED {p['file_path']}")
-                    print(f"  [{phase_name}] Reverted. Skipping iteration.")
+                if len(raw) > 100 and "package" in raw[:50]:
+                    original_src = target_path.read_text()
+                    target_path.write_text(raw)
+                    print(f"  [{phase_name}] Replaced {file_to_fix} ({len(raw)} chars)")
+
+                    print(f"  [{phase_name}] Verifying Kotlin compilation...")
+                    kt_check = subprocess.run(
+                        ["./gradlew", "compileKotlin", "--no-daemon", "-q"],
+                        cwd=output_dir, capture_output=True, text=True, timeout=60,
+                    )
+                    if kt_check.returncode != 0:
+                        print(f"  [{phase_name}] Replacement broke Kotlin! Reverting...")
+                        target_path.write_text(original_src)
+                        print(f"  [{phase_name}] Reverted.")
+                        continue
+                    print(f"  [{phase_name}] Kotlin compilation OK!")
+                else:
+                    print(f"  [{phase_name}] LLM output invalid: {raw[:100]}")
                     continue
+
             except Exception as e:
                 print(f"  [{phase_name}] Fix failed: {e}")
                 continue
 
         return False
 
-    def _print_project_summary(self) -> None:
+    def _print_project_summary(self):
         if not self.design:
             return
         print()
