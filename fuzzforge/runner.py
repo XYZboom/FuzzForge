@@ -79,6 +79,26 @@ def diagnose_failure(build_result: dict[str, Any]) -> list[str]:
                 matches.append(line.strip())
         issues.append(f"Unresolved references found: {matches[:3]}")
 
+    if "Syntax error" in stderr:
+        matches = []
+        lines = stderr.split("\n")
+        for line in lines:
+            if "Syntax error" in line:
+                matches.append(line.strip()[:100])
+        issues.append(f"Syntax errors: {matches[:3]}")
+
+    if "An interface cannot extend a class" in stderr:
+        issues.append("An interface cannot extend a class — root element missing 'kind = ImplementationKind.Interface' or misconfigured")
+
+    if "This type has a constructor" in stderr:
+        issues.append("Abstract class used as interface — check element hierarchy for missing 'interface_kind'")
+
+    if "Cycle in supertypes" in stderr:
+        issues.append("Cycle in supertypes — self-referencing element detected")
+
+    if "cannot be overridden" in stderr:
+        issues.append("Final method override — check root element is interface not abstract class")
+
     if "Type mismatch" in stderr:
         issues.append("Type mismatch errors — check enum references and field types in TreeBuilder")
 

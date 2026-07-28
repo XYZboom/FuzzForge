@@ -28,24 +28,23 @@ def _pn(design: dict) -> str:
 
 def gen_generator_config(design: dict[str, Any], output_dir: str) -> str:
     """Generate GeneratorConfig.kt."""
-    pkg = "com.fuzzforge"
     fields = design.get("generator_config", {}).get("fields", [])
-    field_lines2 = []
+    field_lines = []
     for f in fields:
-        field_lines2.append(f"    val {f['name']}: {f['type']} = {f.get('default_value', '')},")
+        field_lines.append(f"    val {f['name']}: {f['type']} = {f.get('default_value', '')},")
     content = f"""\
-{_pkg([pkg, "generator"])}
+package com.fuzzforge.generator
 
 data class GeneratorConfig(
     val seed: Long = System.currentTimeMillis(),
-{chr(10).join(field_lines2)}
+{chr(10).join(field_lines)}
 ) {{
     companion object {{
         val default = GeneratorConfig()
     }}
 }}
 """
-    path = Path(output_dir) / "src" / "main" / "kotlin" / "com" / "fuzzforge" / "config" / "GeneratorConfig.kt"
+    path = Path(output_dir) / "src" / "main" / "kotlin" / "com" / "fuzzforge" / "generator" / "GeneratorConfig.kt"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content)
     return str(path)
