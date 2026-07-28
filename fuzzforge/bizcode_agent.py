@@ -264,7 +264,6 @@ class CppGenVisitor : UirDefaultVisitor<Unit, StringBuilder>() {{
         "void" -> ""
         else -> "0"
     }}
-    }}
 
     override fun visitElement(element: UirElement, data: StringBuilder) {{
         element.acceptChildren(this, data)
