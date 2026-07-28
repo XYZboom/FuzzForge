@@ -114,7 +114,7 @@ class FuzzForge:
 
         return {"status": "generated", "output_dir": self.output_dir, "design": self.design}
 
-    def _run_semantic_validation_loop(self, max_iterations: int = 2) -> dict[str, Any]:
+    def _run_semantic_validation_loop(self, max_iterations: int = 4) -> dict[str, Any]:
         """Small loop: generate C++ programs -> compile with g++ -> classify errors -> fix -> repeat.
 
         Multi-agent: Generator Agent -> Translation Agent -> Compiler Agent -> Classifier Agent -> LLM Fix.
