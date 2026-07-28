@@ -69,6 +69,7 @@ class {base}Generator(
         val classKind = ClassKind.entries[random.nextInt(ClassKind.entries.size)]
         val isFinal = random.nextFloat() < 0.3f
         val isAbstract = classKind == ClassKind.ABSTRACT || random.nextFloat() < 0.1f
+        val isUnion = classKind == ClassKind.UNION
 
         val numFuncs = random.nextInt(config.minFunctionsPerClass, config.maxFunctionsPerClass + 1)
         val funcs = mutableListOf<UirFunctionDeclaration>()
@@ -102,12 +103,13 @@ class {base}Generator(
 
     private fun generateFunction(name: String, className: String): UirFunctionDeclaration {{
         val rawVirtual = random.nextFloat() < config.virtualProbability
-        val rawStatic = random.nextFloat() < 0.2f
-        val rawConst = random.nextFloat() < 0.3f
-        val isVirtual = rawVirtual && !rawStatic
-        val isStatic = rawStatic
-        val isConst = rawConst && !rawStatic
-        val isPureVirtual = isVirtual && random.nextFloat() < 0.3f
+                val rawStatic = random.nextFloat() < 0.2f
+                val rawConst = random.nextFloat() < 0.3f
+                // C++ constraints: unions cannot have virtual functions; static functions cannot be virtual or const
+                val isVirtual = rawVirtual && !rawStatic && !isUnion
+                val isStatic = rawStatic
+                val isConst = rawConst && !rawStatic
+                val isPureVirtual = isVirtual && random.nextFloat() < 0.3f
         val isTemplate = random.nextFloat() < config.templateProbability && !isVirtual
 
         val returnType = generateFundamentalType()
