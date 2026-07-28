@@ -254,7 +254,7 @@ dependencies {{
     implementation("io.github.oshai:kotlin-logging-jvm:7.0.3")
     implementation("ch.qos.logback:logback-classic:1.5.18")
 }}
-application {{ mainClass = "com.fuzzforge.cli.{base}CommandKt" }}
+application {{ mainClass = "com.fuzzforge.cli.AppKt" }}
 sourceSets.main {{ kotlin.srcDir("src/main/kotlin") }}
 tasks.test {{ useJUnitPlatform() }}
 """
