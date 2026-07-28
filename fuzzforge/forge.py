@@ -149,7 +149,7 @@ class FuzzForge:
 
     def _run_validation_phase(self, phase_name, max_iterations, file_to_fix, fix_instructions):
         """Run a single validation phase. Full file replacement strategy."""
-        from fuzzforge.healer import call_llm_for_fix
+        from fuzzforge.healer import call_llm_for_fix, parse_fix_response, apply_patches
         from fuzzforge.agent_tools import tool_skill_view
 
         output_dir = self.output_dir
@@ -264,35 +264,38 @@ class FuzzForge:
                     f"Write the entire file from the package declaration to the last closing brace."
                 )
 
-                print(f"  [{phase_name}] Generating full file replacement...")
+                # Generate patches — LLM outputs JSON with old_string + new_string
+                # Python framework handles fuzzy matching via tool_patch
+                patch_prompt = (
+                    f"Based on your analysis, output JSON patches to fix {file_to_fix}.\n\n"
+                    f"YOUR ANALYSIS:\n{analysis[:2000]}\n\n"
+                    f"CURRENT {file_to_fix}:\n{focus_src[:2500]}\n\n"
+                    f"Output ONLY a JSON array of patches. NO other text.\n"
+                    f'Each patch: {{"file_path": "src/main/kotlin/com/fuzzforge/.../File.kt", '
+                    f'"old_string": "approximate text to find (whitespace insensitive)", '
+                    f'"new_string": "replacement text"}}\n'
+                    f"The old_string will be matched using fuzzy matching (whitespace-insensitive, "
+                    f"line-by-line, content-only). You don't need to match whitespace exactly."
+                )
+
+                print(f"  [{phase_name}] Generating patches...")
                 raw = call_llm_for_fix(patch_prompt)
-                raw = raw.strip()
-                if raw.startswith("```"):
-                    lines = raw.split("\n")
-                    if lines[0].startswith("```"):
-                        lines = lines[1:]
-                    if lines and lines[-1].strip().startswith("```"):
-                        lines = lines[:-1]
-                    raw = "\n".join(lines)
+                patches = parse_fix_response(raw)
+                if not patches:
+                    print(f"  [{phase_name}] No patches generated")
+                    continue
+                print(f"  [{phase_name}] Applying {len(patches)} patch(es)")
+                applied = apply_patches(output_dir, patches)
+                for a in applied:
+                    print(f"    {a}")
 
-                if len(raw) > 100 and "package" in raw[:50]:
-                    original_src = target_path.read_text()
-                    target_path.write_text(raw)
-                    print(f"  [{phase_name}] Replaced {file_to_fix} ({len(raw)} chars)")
-
-                    print(f"  [{phase_name}] Verifying Kotlin compilation...")
-                    kt_check = subprocess.run(
-                        ["./gradlew", "compileKotlin", "--no-daemon", "-q"],
-                        cwd=output_dir, capture_output=True, text=True, timeout=60,
-                    )
-                    if kt_check.returncode != 0:
-                        print(f"  [{phase_name}] Replacement broke Kotlin! Reverting...")
-                        target_path.write_text(original_src)
-                        print(f"  [{phase_name}] Reverted.")
-                        continue
-                    print(f"  [{phase_name}] Kotlin compilation OK!")
-                else:
-                    print(f"  [{phase_name}] LLM output invalid: {raw[:100]}")
+                # Verify Kotlin compilation
+                kt_check = subprocess.run(
+                    ["./gradlew", "compileKotlin", "--no-daemon", "-q"],
+                    cwd=output_dir, capture_output=True, text=True, timeout=60,
+                )
+                if kt_check.returncode != 0:
+                    print(f"  [{phase_name}] Patch broke Kotlin! Skipping.")
                     continue
 
             except Exception as e:
