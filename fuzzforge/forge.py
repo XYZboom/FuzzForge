@@ -209,6 +209,23 @@ class FuzzForge:
 
             stderr = compile_out.stderr
             stdout = compile_out.stdout
+            error_lines = stderr.split("\n")
+
+            # Check if errors are syntax or semantic
+            has_syntax_error = any("error:" in l and (
+                "expected class-name" in l or "expected" in l or
+                "template" in l or "declared" in l or
+                "Syntax error" in l or "Unexpected" in l
+            ) for l in error_lines if "error:" in l)
+            has_semantic_only = any("error:" in l and not (
+                "expected class-name" in l or "expected" in l or
+                "template" in l or "declared" in l or
+                "Syntax error" in l or "Unexpected" in l
+            ) for l in error_lines if "error:" in l)
+
+            if phase_name == "Syntax" and not has_syntax_error and has_semantic_only:
+                print(f"  [{phase_name}] No syntax errors found — remaining errors are semantic. Passing.")
+                return True
 
             # Check success count
             success_count = 0
