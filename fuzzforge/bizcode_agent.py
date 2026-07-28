@@ -208,7 +208,7 @@ class CppGenVisitor : UirDefaultVisitor<Unit, StringBuilder>() {{
     override fun visitFunctionDeclaration(fd: UirFunctionDeclaration, data: StringBuilder) {{
         val retType = when (fd.returnType) {{
             is UirFundamentalType -> (fd.returnType as UirFundamentalType).name
-            is UirPointerType -> (fd.returnType as UirPointerType).pointeeType.let {{ it is UirFundamentalType -> it.name; else -> "void" }}
+            is UirPointerType -> {{ val pt = fd.returnType as UirPointerType; if (pt.pointeeType is UirFundamentalType) (pt.pointeeType as UirFundamentalType).name else "void" }}
             else -> "int"
         }}
         val params = fd.parameterList.parameters.joinToString(", ") {{ p ->
