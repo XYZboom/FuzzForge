@@ -173,7 +173,7 @@ class FuzzForge:
 
             # Check for syntax errors
             has_syntax_error = any(
-                "error:" in l and ("expected" in l or "template" in l or "declared" in l or "Syntax error" in l or "Unexpected" in l)
+                "error:" in l and ("expected" in l or "template" in l or "declared" in l or "has not been declared" in l or "Syntax error" in l or "Unexpected" in l)
                 for l in error_lines
             )
             if phase_name == "Syntax" and not has_syntax_error:
