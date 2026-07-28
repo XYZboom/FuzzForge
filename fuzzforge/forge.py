@@ -114,7 +114,7 @@ class FuzzForge:
 
         return {"status": "generated", "output_dir": self.output_dir, "design": self.design}
 
-    def _run_cpp_validation_loop(self, max_iterations: int = 6) -> dict[str, Any]:
+    def _run_cpp_validation_loop(self, max_iterations: int = 3) -> dict[str, Any]:
         """Two-phase C++ validation: syntax first, then semantics.
 
         Phase 1 — Syntax: Fix Translator.kt until 100% of programs have valid C++ syntax.
@@ -305,6 +305,28 @@ class FuzzForge:
                 applied = apply_patches(output_dir, patches)
                 for a in applied:
                     print(f"    {a}")
+
+                # Verify Kotlin still compiles after patches
+                print(f"  [{phase_name}] Verifying Kotlin compilation...")
+                kt_check = subprocess.run(
+                    ["./gradlew", "compileKotlin", "--no-daemon", "-q"],
+                    cwd=output_dir, capture_output=True, text=True, timeout=60,
+                )
+                if kt_check.returncode != 0:
+                    print(f"  [{phase_name}] Patch broke Kotlin compilation! Reverting...")
+                    # Revert by re-applying patches in reverse
+                    for p in reversed(patches):
+                        old = p.get("new_string", "")
+                        new = p.get("old_string", "")
+                        if old and new:
+                            fp = Path(f"{output_dir}/{p['file_path']}")
+                            if fp.exists():
+                                content = fp.read_text()
+                                if old in content:
+                                    fp.write_text(content.replace(old, new, 1))
+                                    print(f"    REVERTED {p['file_path']}")
+                    print(f"  [{phase_name}] Reverted. Skipping iteration.")
+                    continue
             except Exception as e:
                 print(f"  [{phase_name}] Fix failed: {e}")
                 continue
