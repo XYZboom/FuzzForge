@@ -257,7 +257,7 @@ class CppGenVisitor : UirDefaultVisitor<Unit, StringBuilder>() {{
         "int" -> "0"
         "long" -> "0L"
         "short" -> "0"
-        "char" -> "'\\u0027'"
+        "char" -> "0"
         "bool" -> "false"
         "float" -> "0.0f"
         "double" -> "0.0"
