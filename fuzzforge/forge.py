@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -31,7 +32,7 @@ class FuzzForge:
         auto_fix: bool = False,
     ) -> dict[str, Any]:
         provider = provider or "auto"
-        steps = 4 if auto_fix else (3 if not skip_build else 2)
+        steps = 5 if auto_fix else (3 if not skip_build else 2)
         step = 0
 
         # Step 1: Design IR
@@ -81,6 +82,14 @@ class FuzzForge:
 
             if result["success"]:
                 print(f"  Build succeeded in {result['elapsed_seconds']}s!")
+
+                # Step 5: Semantic Validation Loop (small loop) — optional
+                if auto_fix:
+                    step += 1
+                    print_header(f"Step {step}/{steps}: Semantic Validation Loop")
+                    print_step(step, steps, "Generating C++ and compiling with g++...")
+                    self._run_semantic_validation_loop()
+
             else:
                 print(f"  Build failed in {result['elapsed_seconds']}s (exit code {result['return_code']})")
 
@@ -105,6 +114,86 @@ class FuzzForge:
             }
 
         return {"status": "generated", "output_dir": self.output_dir, "design": self.design}
+
+    def _run_semantic_validation_loop(self, max_iterations: int = 5) -> dict[str, Any]:
+        """Small loop: generate C++ programs -> compile with g++ -> classify errors -> fix -> repeat.
+
+        Multi-agent: Generator Agent -> Translation Agent -> Compiler Agent -> Classifier Agent -> LLM Fix.
+        """
+        from fuzzforge.classifier_agent import classify_error, generate_fix_report
+        from fuzzforge.healer import call_llm_for_fix, parse_fix_response, apply_patches, build_fix_prompt
+
+        if not self.output_dir or not self.design:
+            print(f"  [SemanticLoop] Skipped: no project to validate")
+            return {"success": False, "iterations": 0}
+
+        print(f"  [SemanticLoop] Generating C++ programs and compiling with g++...")
+        print(f"  [SemanticLoop] Max {max_iterations} iterations")
+
+        for iteration in range(1, max_iterations + 1):
+            print(f"\n  --- Semantic Iteration {iteration}/{max_iterations} ---")
+
+            # 1. Generator Agent + Translation Agent: produce C++ code
+            out = subprocess.run(
+                ["./gradlew", ":run", "--args", "generate -n 10", "--no-daemon", "-q"],
+                cwd=self.output_dir, capture_output=True, text=True, timeout=60,
+            )
+            # 2. Compiler Agent: compile with g++
+            compile_out = subprocess.run(
+                ["./gradlew", ":run", "--args", "run -n 10", "--no-daemon", "-q"],
+                cwd=self.output_dir, capture_output=True, text=True, timeout=120,
+            )
+
+            stderr = compile_out.stderr
+            stdout = compile_out.stdout
+
+            # Check if all compiled OK
+            success_count = 0
+            for line in stdout.split("\n"):
+                if "compiled OK" in line:
+                    parts = line.split()
+                    for p in parts:
+                        if "/" in p:
+                            ok, total = p.split("/")
+                            success_count = int(ok)
+                            break
+
+            if success_count == 10:
+                print(f"  [SemanticLoop] All 10/10 programs compiled successfully!")
+                return {"success": True, "iterations": iteration}
+
+            print(f"  [SemanticLoop] {success_count}/10 compiled OK — errors found")
+
+            # 3. Classifier Agent: classify errors
+            classified = classify_error(stderr, "")
+            report = ""
+            if classified:
+                report = generate_fix_report(classified)
+                print(f"  [Classifier Agent]")
+                for line in report.split("\n"):
+                    print(f"    {line}")
+
+            # 4. Healer Agent: call LLM to fix bizcode
+            prompt = f"ERROR CLASSIFICATION:\n{report}\n\n" if report else ""
+            prompt += build_fix_prompt(self.output_dir, stderr, stdout, self.design)
+
+            try:
+                print(f"  [SemanticLoop] Calling GLM-5.2 to fix generator...")
+                raw = call_llm_for_fix(prompt)
+                patches = parse_fix_response(raw)
+                if not patches:
+                    print(f"  [SemanticLoop] LLM returned no patches")
+                    continue
+                print(f"  [SemanticLoop] LLM returned {len(patches)} patch(es)")
+                applied = apply_patches(self.output_dir, patches)
+                for a in applied:
+                    print(f"    {a}")
+            except Exception as e:
+                print(f"  [SemanticLoop] Fix failed: {e}")
+                continue
+
+        print(f"  [SemanticLoop] Exhausted after {max_iterations} iterations")
+        return {"success": False, "iterations": max_iterations}
 
     def _print_project_summary(self) -> None:
         if not self.design:
