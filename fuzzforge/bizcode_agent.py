@@ -197,7 +197,7 @@ class CppGenVisitor : UirDefaultVisitor<Unit, StringBuilder>() {{
 
     override fun visitClassDeclaration(cd: UirClassDeclaration, data: StringBuilder) {{
         if (cd.templateParams.isNotEmpty()) {{
-            val params = cd.templateParams.joinToString(", ") {{ it.name }}
+            val params = cd.templateParams.joinToString(", ") {{ "typename " + it.name }}
             data.appendLine("template<$params>")
         }}
         val kind = if (cd.classKind == ClassKind.UNION) "union" else "class"
