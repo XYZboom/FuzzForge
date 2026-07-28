@@ -76,8 +76,10 @@ class {base}Generator(
             funcs.add(generateFunction("m$i", name))
         }}
 
-        val hasSuperType = random.nextFloat() < config.inheritanceProbability
-        val superType = if (hasSuperType) generateFundamentalType() else null
+        val hasSuperType = false
+        // C++ cannot inherit from fundamental types (int, float, bool, char, etc.)
+        // Only allow inheritance from class types — skip for now to avoid inherited-fundamental errors
+        val superType: UirType? = null
 
         val hasTemplate = random.nextFloat() < config.templateProbability
         val templateParams = if (hasTemplate) {{
@@ -101,10 +103,14 @@ class {base}Generator(
     }}
 
     private fun generateFunction(name: String, className: String): UirFunctionDeclaration {{
-        val isVirtual = random.nextFloat() < config.virtualProbability
+        val rawVirtual = random.nextFloat() < config.virtualProbability
+        val rawStatic = random.nextFloat() < 0.2f
+        val rawConst = random.nextFloat() < 0.3f
+        // C++ constraints: static functions cannot be virtual or const
+        val isVirtual = rawVirtual && !rawStatic
+        val isStatic = rawStatic
+        val isConst = rawConst && !rawStatic
         val isPureVirtual = isVirtual && random.nextFloat() < 0.3f
-        val isConst = random.nextFloat() < 0.3f
-        val isStatic = random.nextFloat() < 0.2f
         val isTemplate = random.nextFloat() < config.templateProbability && !isVirtual
 
         val returnType = generateFundamentalType()
@@ -239,9 +245,25 @@ class CppGenVisitor : UirDefaultVisitor<Unit, StringBuilder>() {{
             data.appendLine("    $static_$virtual$retType ${{fd.name}}($params)$const_$pure;")
         }} else {{
             data.appendLine("    $static_$virtual$retType ${{fd.name}}($params)$const_ {{")
-            data.appendLine("        // TODO: implement")
+            // Add return statement for non-void functions to avoid -Wreturn-type
+            if (retType != "void") {{
+                data.appendLine("        return ${{getDefaultReturn(retType)}};")
+            }}
             data.appendLine("    }}")
         }}
+    }}
+
+    private fun getDefaultReturn(type: String): String = when (type) {{
+        "int" -> "0"
+        "long" -> "0L"
+        "short" -> "0"
+        "char" -> "'\\u0027'"
+        "bool" -> "false"
+        "float" -> "0.0f"
+        "double" -> "0.0"
+        "void" -> ""
+        else -> "0"
+    }}
     }}
 
     override fun visitElement(element: UirElement, data: StringBuilder) {{

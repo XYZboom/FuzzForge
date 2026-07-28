@@ -264,18 +264,20 @@ class FuzzForge:
                     f"Write the entire file from the package declaration to the last closing brace."
                 )
 
-                # Generate patches — LLM outputs JSON with old_string + new_string
-                # Python framework handles fuzzy matching via tool_patch
+                # Generate patches — LLM outputs JSON with line-exact old_string
                 patch_prompt = (
                     f"Based on your analysis, output JSON patches to fix {file_to_fix}.\n\n"
                     f"YOUR ANALYSIS:\n{analysis[:2000]}\n\n"
                     f"CURRENT {file_to_fix}:\n{focus_src[:2500]}\n\n"
                     f"Output ONLY a JSON array of patches. NO other text.\n"
-                    f'Each patch: {{"file_path": "src/main/kotlin/com/fuzzforge/.../File.kt", '
-                    f'"old_string": "approximate text to find (whitespace insensitive)", '
-                    f'"new_string": "replacement text"}}\n'
-                    f"The old_string will be matched using fuzzy matching (whitespace-insensitive, "
-                    f"line-by-line, content-only). You don't need to match whitespace exactly."
+                    f'Each patch: {{\n'
+                    f'  "file_path": "src/main/kotlin/com/fuzzforge/.../File.kt",\n'
+                    f'  "old_string": "EXACT 1-2 LINES of code to replace (use the exact text from the file above)",\n'
+                    f'  "new_string": "replacement code (1-10 lines maximum)"\n'
+                    f'}}\n'
+                    f"IMPORTANT: old_string must be a SHORT unique snippet (1-2 lines) from the file. "
+                    f"new_string should be the replacement for that snippet.\n"
+                    f"Make small, targeted changes. Do NOT try to replace entire functions."
                 )
 
                 print(f"  [{phase_name}] Generating patches...")
@@ -284,7 +286,7 @@ class FuzzForge:
                 if not patches:
                     print(f"  [{phase_name}] No patches generated")
                     continue
-                print(f"  [{phase_name}] Applying {len(patches)} patch(es)")
+                print(f"  [{phase_name}] LLM returned {len(patches)} patch(es)")
                 applied = apply_patches(output_dir, patches)
                 for a in applied:
                     print(f"    {a}")
