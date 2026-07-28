@@ -167,36 +167,85 @@ class FuzzForge:
                 for line in report.split("\n"):
                     print(f"    {line}")
 
-            # 4. Fix Agent: compact prompt with pre-fetched info
+            # 4. Fix Agent: structured reasoning chain — trace errors back to root cause
             from fuzzforge.healer import call_llm_for_fix, parse_fix_response, apply_patches
             
-            tgen_src = Path(f"{self.output_dir}/src/main/kotlin/com/fuzzforge/translator/Translator.kt").read_text()[:2000] if Path(f"{self.output_dir}/src/main/kotlin/com/fuzzforge/translator/Translator.kt").exists() else ""
-            ggen_src = Path(f"{self.output_dir}/src/main/kotlin/com/fuzzforge/generator/Generator.kt").read_text()[:1500] if Path(f"{self.output_dir}/src/main/kotlin/com/fuzzforge/generator/Generator.kt").exists() else ""
+            # Summarize unique error patterns (deduplicate)
+            error_lines = stderr.split("\n")
+            error_patterns = []
+            seen = set()
+            for line in error_lines:
+                line = line.strip()
+                if "error:" in line:
+                    parts = line.split("error:", 1)
+                    if len(parts) > 1:
+                        core = parts[1].strip()[:120]
+                        if core not in seen:
+                            seen.add(core)
+                            error_patterns.append(core)
+            summary = "\n".join(f"{i+1}. {e}" for i, e in enumerate(error_patterns[:5]))
+            
+            # Load skills
+            from fuzzforge.agent_tools import tool_skill_view
+            trans_skill = tool_skill_view("fuzzforge-cpp-translator").get("content", "")[:1500]
+            gen_skill = tool_skill_view("fuzzforge-cpp-generator").get("content", "")[:1500]
+            
+            # Read current sources
+            tgen_src = Path(f"{self.output_dir}/src/main/kotlin/com/fuzzforge/translator/Translator.kt").read_text() if Path(f"{self.output_dir}/src/main/kotlin/com/fuzzforge/translator/Translator.kt").exists() else ""
+            ggen_src = Path(f"{self.output_dir}/src/main/kotlin/com/fuzzforge/generator/Generator.kt").read_text() if Path(f"{self.output_dir}/src/main/kotlin/com/fuzzforge/generator/Generator.kt").exists() else ""
             
             cpp_code = ""
             cpp_files = sorted(Path(self.output_dir).glob("reports/temp/*.cpp"))
             if cpp_files:
                 cpp_code = "\n".join(Path(cpp_files[0]).read_text().split("\n")[:30])
-
-            fix_prompt = (
-                f"FIX the fuzzer generator. C++ compilation errors:\n\n"
-                f"{stderr[:2000]}\n\n"
-                f"Generated C++:\n{cpp_code}\n\n"
-                f"Translator.kt:\n{tgen_src}\n\n"
-                f"Generator.kt:\n{ggen_src}\n\n"
-                f"Rules: template<typename T>, not template<T>; can't inherit from int/bool/char/float; "
-                f"non-void functions need return 0; no static virtual; union can't have virtual.\n"
-                f"Output JSON patches. Fix Translator.kt visitor output and Generator.kt generation logic."
+            
+            # Structured reasoning prompt with explicit chain
+            reasoning_prompt = (
+                f"Trace each C++ compilation error back to its root cause in the Kotlin generator code.\n\n"
+                f"## Step 1: The Errors\n"
+                f"{summary}\n\n"
+                f"## Step 2: Generated C++ Code (first program)\n"
+                f"{cpp_code}\n\n"
+                f"## Step 3: Translator.kt (generates the C++ output)\n"
+                f"{tgen_src[:2000]}\n\n"
+                f"## Step 4: Generator.kt (builds the IR that Translator walks)\n"
+                f"{ggen_src[:2000]}\n\n"
+                f"## Step 5: C++ Rules (from skill)\n"
+                f"{trans_skill}\n\n"
+                f"## Reasoning Chain (fill in):\n"
+                f"For each error pattern, trace the chain:\n"
+                f"  Error A: \"{error_patterns[0] if error_patterns else '(none)'}\"\n"
+                f"  → Which C++ construct is invalid? (e.g., 'static virtual' in output)\n"
+                f"  → Which Translator.kt code generates this construct? (line numbers)\n"
+                f"  → What IR data does that code read? (e.g., isStatic + isVirtual flags)\n"
+                f"  → How does Generator.kt set this data? (line numbers)\n"
+                f"  → ROOT CAUSE: Which file and what change fixes it?\n\n"
+                f"Output your analysis first, then the JSON patches."
             )
-
+            
             try:
-                print(f"  [SemanticLoop] Calling GLM-5.2 for patches...")
-                raw = call_llm_for_fix(fix_prompt)
+                print(f"  [SemanticLoop] Reasoning chain analysis...")
+                analysis = call_llm_for_fix(reasoning_prompt)
+                print(f"  [SemanticLoop] Analysis: {analysis[:500]}")
+                
+                # Phase 2: Extract patches from the analysis
+                patch_prompt = (
+                    f"Based on your analysis, extract the exact JSON patches.\n\n"
+                    f"YOUR ANALYSIS:\n{analysis[:2000]}\n\n"
+                    f"CURRENT Translator.kt:\n{tgen_src[:2500]}\n\n"
+                    f"CURRENT Generator.kt:\n{ggen_src[:2500]}\n\n"
+                    f"Output ONLY a JSON array of patches. NO other text.\n"
+                    f"Each patch: {{\"file_path\": \"src/main/kotlin/com/fuzzforge/.../File.kt\", "
+                    f"\"old_string\": \"exact text to replace\", \"new_string\": \"replacement text\"}}"
+                )
+                
+                print(f"  [SemanticLoop] Generating patches...")
+                raw = call_llm_for_fix(patch_prompt)
                 patches = parse_fix_response(raw)
                 if not patches:
-                    print(f"  [SemanticLoop] LLM returned no patches")
+                    print(f"  [SemanticLoop] No patches")
                     continue
-                print(f"  [SemanticLoop] LLM returned {len(patches)} patch(es)")
+                print(f"  [SemanticLoop] Applying {len(patches)} patch(es)")
                 applied = apply_patches(self.output_dir, patches)
                 for a in applied:
                     print(f"    {a}")
