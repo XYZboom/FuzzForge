@@ -1,271 +1,186 @@
 """
 FuzzForge: Business Code Agent.
-
-Responsible for generating business code (src/main/kotlin/):
-  1. GeneratorConfig.kt
-  2. Generator.kt
-  3. Translator.kt
-  4. Runner.kt
-  5. RunConfig.kt
-  6. App.kt (CLI)
-  7. Root build.gradle.kts
-
-This agent NEVER touches tree/ files.
+Generates Generator, Translator, Runner, Reducer, BugCollector, DiffTester, CLI.
 """
 
 from pathlib import Path
 from typing import Any
 
 
-def _pkg(parts: list[str]) -> str:
-    return "package " + ".".join(parts)
-
-
 def _pn(design: dict) -> str:
-    """Get project name for use in class names."""
     return design.get("project_name", "my-fuzzer").capitalize().replace("-", "").replace("_", "")
 
 
-def gen_generator_config(design: dict[str, Any], output_dir: str) -> str:
-    """Generate GeneratorConfig.kt."""
-    fields = design.get("generator_config", {}).get("fields", [])
-    field_lines = []
-    for f in fields:
-        field_lines.append(f"    val {f['name']}: {f['type']} = {f.get('default_value', '')},")
-    content = f"""\
-package com.fuzzforge.generator
-
-data class GeneratorConfig(
-    val seed: Long = System.currentTimeMillis(),
-{chr(10).join(field_lines)}
-) {{
-    companion object {{
-        val default = GeneratorConfig()
-    }}
-}}
-"""
-    path = Path(output_dir) / "src" / "main" / "kotlin" / "com" / "fuzzforge" / "generator" / "GeneratorConfig.kt"
+def _write(path: Path, content: str) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content)
     return str(path)
+
+
+def gen_generator_config(design: dict[str, Any], output_dir: str) -> str:
+    fields = design.get("generator_config", {}).get("fields", [])
+    lines = [f"    val {f['name']}: {f['type']} = {f.get('default_value', '')}," for f in fields]
+    sep = "\n"
+    return _write(
+        Path(output_dir) / "src" / "main" / "kotlin" / "com" / "fuzzforge" / "generator" / "GeneratorConfig.kt",
+        f"package com.fuzzforge.generator\n\ndata class GeneratorConfig(\n    val seed: Long = System.currentTimeMillis(),\n{sep.join(lines)}\n) {{\n    companion object {{\n        val default = GeneratorConfig()\n    }}\n}}\n")
 
 
 def gen_run_config(output_dir: str) -> str:
-    """Generate RunConfig.kt."""
-    content = """\
-package com.fuzzforge.config
-
-import com.fuzzforge.generator.GeneratorConfig
-
-data class RunConfig(
-    val outputDir: String = "./reports",
-    val logLevel: String = "info",
-    val workers: Int = 4,
-    val batchSize: Int = 200,
-    val runTimeoutSeconds: Int = 120,
-    val generatorConfig: GeneratorConfig = GeneratorConfig.default,
-) {
-    companion object {
-        val default = RunConfig()
-    }
-}
-"""
-    path = Path(output_dir) / "src" / "main" / "kotlin" / "com" / "fuzzforge" / "config" / "RunConfig.kt"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content)
-    return str(path)
+    return _write(
+        Path(output_dir) / "src" / "main" / "kotlin" / "com" / "fuzzforge" / "config" / "RunConfig.kt",
+        "package com.fuzzforge.config\n\nimport com.fuzzforge.generator.GeneratorConfig\n\ndata class RunConfig(\n    val outputDir: String = \"./reports\",\n    val logLevel: String = \"info\",\n    val workers: Int = 4,\n    val batchSize: Int = 200,\n    val runTimeoutSeconds: Int = 120,\n    val generatorConfig: GeneratorConfig = GeneratorConfig.default,\n) {\n    companion object {\n        val default = RunConfig()\n    }\n}\n")
 
 
 def gen_generator(design: dict[str, Any], output_dir: str) -> str:
-    """Generate Generator.kt.
-
-    Key design: uses buildProgram() from auto-generated builders.
-    Never references UirVisitor or UirTransformer directly.
-    """
     base = _pn(design)
-    content = f"""\
-package com.fuzzforge.generator
-
-import kotlin.random.Random
-import com.fuzzforge.ir.UirProgram
-import com.fuzzforge.ir.builder.buildProgram
-
-class {base}Generator(
-    private val config: GeneratorConfig = GeneratorConfig.default,
-) {{
-    private val random: Random = Random.Default
-
-    fun generate(): UirProgram {{
-        return buildProgram()
-    }}
-}}
-"""
-    path = Path(output_dir) / "src" / "main" / "kotlin" / "com" / "fuzzforge" / "generator" / "Generator.kt"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content)
-    return str(path)
+    return _write(
+        Path(output_dir) / "src" / "main" / "kotlin" / "com" / "fuzzforge" / "generator" / "Generator.kt",
+        f"package com.fuzzforge.generator\n\nimport kotlin.random.Random\nimport com.fuzzforge.ir.UirProgram\nimport com.fuzzforge.ir.builder.buildProgram\n\nclass {base}Generator(\n    private val config: GeneratorConfig = GeneratorConfig.default,\n) {{\n    private val random: Random = Random.Default\n\n    fun generate(): UirProgram {{\n        return buildProgram()\n    }}\n}}\n")
 
 
 def gen_translator(design: dict[str, Any], output_dir: str) -> str:
-    """Generate Translator.kt."""
     base = _pn(design)
-    content = f"""\
-package com.fuzzforge.translator
-
-import com.fuzzforge.ir.UirProgram
-
-interface FuzzForgeTranslator<R> {{
-    fun translate(program: UirProgram): R
-}}
-
-class {base}Translator : FuzzForgeTranslator<String> {{
-    override fun translate(program: UirProgram): String {{
-        return "Generated by FuzzForge"
-    }}
-}}
-"""
-    path = Path(output_dir) / "src" / "main" / "kotlin" / "com" / "fuzzforge" / "translator" / "Translator.kt"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content)
-    return str(path)
+    return _write(
+        Path(output_dir) / "src" / "main" / "kotlin" / "com" / "fuzzforge" / "translator" / "Translator.kt",
+        f"package com.fuzzforge.translator\n\nimport com.fuzzforge.ir.UirProgram\n\ninterface FuzzForgeTranslator<R> {{\n    fun translate(program: UirProgram): R\n}}\n\nclass {base}Translator : FuzzForgeTranslator<String> {{\n    override fun translate(program: UirProgram): String {{\n        return \"Generated by FuzzForge\"\n    }}\n}}\n")
 
 
 def gen_runner(design: dict[str, Any], output_dir: str) -> str:
-    """Generate Runner.kt."""
     base = _pn(design)
-    content = f"""\
-package com.fuzzforge.runner
-
-import com.fuzzforge.generator.{base}Generator
-import com.fuzzforge.translator.{base}Translator
-import com.fuzzforge.config.RunConfig
-import kotlinx.coroutines.*
-import java.io.File
-
-data class RunResult(val success: Boolean, val stdout: String, val stderr: String, val exitCode: Int, val durationMs: Long)
-
-class {base}Runner(
-    private val config: RunConfig,
-) {{
-    private val generator = {base}Generator(config.generatorConfig)
-    private val translator = {base}Translator()
-
-    suspend fun runSingle(seed: Long? = null): RunResult {{
-        val program = if (seed != null) {{
-            {base}Generator(config.generatorConfig.copy(seed = seed)).generate()
-        }} else {{
-            generator.generate()
-        }}
-        val code = translator.translate(program)
-        return RunResult(success = true, stdout = code, stderr = "", exitCode = 0, durationMs = 0)
-    }}
-
-    suspend fun runBatch(count: Int): List<RunResult> = coroutineScope {{
-        (0 until count).map {{ runSingle() }}
-    }}
-}}
-"""
-    path = Path(output_dir) / "src" / "main" / "kotlin" / "com" / "fuzzforge" / "runner" / "Runner.kt"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content)
-    return str(path)
+    return _write(
+        Path(output_dir) / "src" / "main" / "kotlin" / "com" / "fuzzforge" / "runner" / "Runner.kt",
+        f"package com.fuzzforge.runner\n\nimport com.fuzzforge.generator.{base}Generator\nimport com.fuzzforge.translator.{base}Translator\nimport com.fuzzforge.config.RunConfig\nimport kotlinx.coroutines.*\n\n"
+        f"data class RunResult(val success: Boolean, val stdout: String, val stderr: String, val exitCode: Int, val durationMs: Long)\n\n"
+        f"class {base}Runner(\n    private val config: RunConfig,\n) {{\n"
+        f"    private val generator = {base}Generator(config.generatorConfig)\n"
+        f"    private val translator = {base}Translator()\n\n"
+        f"    suspend fun runSingle(seed: Long? = null): RunResult {{\n"
+        f"        val program = if (seed != null) {{\n"
+        f"            {base}Generator(config.generatorConfig.copy(seed = seed)).generate()\n"
+        f"        }} else {{\n            generator.generate()\n        }}\n"
+        f"        val code = translator.translate(program)\n"
+        f"        return RunResult(success = true, stdout = code, stderr = \"\", exitCode = 0, durationMs = 0)\n    }}\n\n"
+        f"    suspend fun runBatch(count: Int): List<RunResult> = coroutineScope {{\n"
+        f"        (0 until count).map {{ runSingle() }}\n    }}\n}}\n")
 
 
 def gen_app(design: dict[str, Any], output_dir: str) -> str:
-    """Generate App.kt (CLI)."""
     pn = design.get("project_name", "my-fuzzer").lower()
     base = _pn(design)
-    content = f"""\
-package com.fuzzforge.cli
-
-import com.github.ajalt.clikt.core.CliktCommand
-import com.github.ajalt.clikt.core.context
-import com.github.ajalt.clikt.core.subcommands
-import com.github.ajalt.clikt.parameters.options.*
-import com.github.ajalt.clikt.parameters.types.int
-import com.github.ajalt.clikt.output.MordantHelpFormatter
-import com.fuzzforge.config.RunConfig
-import com.fuzzforge.generator.{base}Generator
-import com.fuzzforge.runner.{base}Runner
-import kotlinx.coroutines.runBlocking
-
-class {base}Command : CliktCommand(
-    name = "{pn}",
-    help = "{design.get('description', 'Fuzzer generated by FuzzForge')}",
-) {{
-    init {{
-        context {{ helpFormatter = {{ MordantHelpFormatter(it, showDefaultValues = true) }} }}
-        subcommands(RunCommand(), GenerateCommand())
-    }}
-    override fun run() {{
-        echo("{base} — Fuzzer")
-        echo("Run with a subcommand: run or generate")
-    }}
-}}
-
-class RunCommand : CliktCommand(name = "run", help = "Run fuzzing campaign") {{
-    val count: Int by option("-n").int().default(10)
-    val output: String by option("-o").default("./reports")
-    override fun run() {{
-        echo("Running campaign: $count programs")
-        val config = RunConfig(outputDir = output)
-        val runner = {base}Runner(config)
-        runBlocking {{
-            val results = runner.runBatch(count)
-            echo("Done: ${{results.count {{ it.success }}}}/$count succeeded")
-        }}
-    }}
-}}
-
-class GenerateCommand : CliktCommand(name = "generate", help = "Generate programs only") {{
-    val count: Int by option("-n").int().default(5)
-    override fun run() {{
-        val generator = {base}Generator()
-        for (i in 0 until count) {{
-            generator.generate()
-            echo("Generated ${{i + 1}}")
-        }}
-    }}
-}}
-
-fun main(args: Array<String>) = {base}Command().main(args)
-"""
-    path = Path(output_dir) / "src" / "main" / "kotlin" / "com" / "fuzzforge" / "cli" / "App.kt"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content)
-    return str(path)
+    desc = design.get("description", "Fuzzer generated by FuzzForge")
+    return _write(
+        Path(output_dir) / "src" / "main" / "kotlin" / "com" / "fuzzforge" / "cli" / "App.kt",
+        f"package com.fuzzforge.cli\n\nimport com.github.ajalt.clikt.core.CliktCommand\nimport com.github.ajalt.clikt.core.context\nimport com.github.ajalt.clikt.core.subcommands\nimport com.github.ajalt.clikt.parameters.options.*\nimport com.github.ajalt.clikt.parameters.types.int\nimport com.github.ajalt.clikt.output.MordantHelpFormatter\nimport com.fuzzforge.config.RunConfig\nimport com.fuzzforge.generator.{base}Generator\nimport com.fuzzforge.runner.{base}Runner\nimport kotlinx.coroutines.runBlocking\n\n"
+        f"class {base}Command : CliktCommand(\n    name = \"{pn}\",\n    help = \"{desc}\",\n) {{\n"
+        f"    init {{\n        context {{ helpFormatter = {{ MordantHelpFormatter(it, showDefaultValues = true) }} }}\n"
+        f"        subcommands(RunCommand(), GenerateCommand())\n    }}\n"
+        f"    override fun run() {{\n        echo(\"{base} — Fuzzer\")\n        echo(\"Run with a subcommand: run or generate\")\n    }}\n}}\n\n"
+        f"class RunCommand : CliktCommand(name = \"run\", help = \"Run fuzzing campaign\") {{\n"
+        f"    val count: Int by option(\"-n\").int().default(10)\n"
+        f"    val output: String by option(\"-o\").default(\"./reports\")\n"
+        f"    override fun run() {{\n        echo(\"Running campaign: $count programs\")\n"
+        f"        val config = RunConfig(outputDir = output)\n        val runner = {base}Runner(config)\n"
+        f"        runBlocking {{\n            val results = runner.runBatch(count)\n"
+        f"            echo(\"Done: ${{results.count {{ it.success }}}}/$count succeeded\")\n        }}\n    }}\n}}\n\n"
+        f"class GenerateCommand : CliktCommand(name = \"generate\", help = \"Generate programs only\") {{\n"
+        f"    val count: Int by option(\"-n\").int().default(5)\n"
+        f"    override fun run() {{\n        val generator = {base}Generator()\n"
+        f"        for (i in 0 until count) {{\n            generator.generate()\n            echo(\"Generated ${{i + 1}}\")\n        }}\n    }}\n}}\n\n"
+        f"fun main(args: Array<String>) = {base}Command().main(args)\n")
 
 
 def gen_root_build(design: dict[str, Any], output_dir: str) -> str:
-    """Generate root build.gradle.kts."""
+    return _write(
+        Path(output_dir) / "build.gradle.kts",
+        'plugins { id("java"); kotlin("jvm"); application; kotlin("plugin.serialization") version "2.4.0" }\n'
+        'group = "com.fuzzforge"; version = "1.0-SNAPSHOT"\nrepositories { mavenCentral() }\n'
+        'kotlin { jvmToolchain(17) }\n'
+        'dependencies {\n'
+        '    implementation(kotlin("stdlib"))\n    implementation(project(":tree"))\n'
+        '    implementation("org.yaml:snakeyaml:2.0")\n'
+        '    implementation("com.github.ajalt.clikt:clikt-jvm:4.2.2")\n'
+        '    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")\n'
+        '    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")\n'
+        '    implementation("io.github.oshai:kotlin-logging-jvm:7.0.3")\n'
+        '    implementation("ch.qos.logback:logback-classic:1.5.18")\n'
+        '}\n'
+        'application { mainClass = "com.fuzzforge.cli.AppKt" }\n'
+        'sourceSets.main { kotlin.srcDir("src/main/kotlin") }\n'
+        'tasks.test { useJUnitPlatform() }\n')
+
+
+def gen_reducer(output_dir: str) -> str:
+    return _write(
+        Path(output_dir) / "src" / "main" / "kotlin" / "com" / "fuzzforge" / "reducer" / "ProgramReducer.kt",
+        "package com.fuzzforge.reducer\n\nimport com.fuzzforge.ir.UirProgram\nimport com.fuzzforge.translator.FuzzForgeTranslator\n\n"
+        "class ProgramReducer(\n    private val translator: FuzzForgeTranslator<String>,\n) {\n"
+        "    private val oracle: ((UirProgram) -> Boolean)? = null\n\n"
+        "    fun reduce(program: UirProgram, testOracle: (UirProgram) -> Boolean, maxPasses: Int = 10): UirProgram {\n"
+        "        var current = program\n        for (pass in 1..maxPasses) {\n"
+        "            val n = (2 shl (pass - 1).coerceAtMost(5))\n"
+        "            val reduced = tryRemove(current, n, testOracle)\n"
+        "            if (reduced == current) break\n            current = reduced\n        }\n"
+        "        return current\n    }\n\n"
+        "    private fun tryRemove(program: UirProgram, nGroups: Int, testOracle: (UirProgram) -> Boolean): UirProgram {\n"
+        "        return program\n    }\n}\n\n"
+        "class ConsistencyChecker {\n"
+        "    fun check(program: UirProgram): List<String> = emptyList()\n}\n")
+
+
+def gen_bug_collector(output_dir: str) -> str:
+    return _write(
+        Path(output_dir) / "src" / "main" / "kotlin" / "com" / "fuzzforge" / "collector" / "BugCollector.kt",
+        "package com.fuzzforge.collector\n\nimport com.fuzzforge.ir.UirProgram\nimport com.fuzzforge.translator.FuzzForgeTranslator\n"
+        "import java.io.File\nimport java.nio.file.Path\nimport java.time.Instant\n\n"
+        "data class BugReport(\n    val id: String,\n    val timestamp: Long = Instant.now().toEpochMilli(),\n"
+        "    val category: BugCategory,\n    val program: UirProgram,\n    val sourceCode: String,\n"
+        "    val errorMessage: String,\n    val diffMismatch: String? = null,\n    val compiler: String? = null,\n    val seed: Long? = null,\n)\n\n"
+        "enum class BugCategory {\n    CRASH, COMPILE_ERROR, WRONG_CODE, ASSERTION_FAILURE, SEGFAULT, TIMEOUT, DIFF_MISMATCH, COMPILER_HANG, UNKNOWN\n}\n\n"
+        "class BugCollector(\n    private val outputDir: Path,\n    private val translator: FuzzForgeTranslator<String>,\n) {\n"
+        "    private val knownPatterns = mutableSetOf<String>()\n"
+        "    private val reportsDir: File = outputDir.resolve(\"reports\").toFile()\n\n"
+        "    init { reportsDir.mkdirs() }\n\n"
+        "    fun submit(report: BugReport): Boolean {\n"
+        "        val normalized = normalizeError(report.errorMessage)\n"
+        "        if (normalized in knownPatterns) return false\n"
+        "        knownPatterns.add(normalized)\n"
+        "        saveReport(report)\n"
+        "        return true\n    }\n\n"
+        "    fun isDuplicate(errorMessage: String): Boolean {\n"
+        "        return normalizeError(errorMessage) in knownPatterns\n    }\n\n"
+        "    private fun normalizeError(msg: String): String {\n"
+        "        return msg.trim()\n    }\n\n"
+        "    private fun saveReport(report: BugReport) {\n"
+        "        val dir = File(reportsDir, \"bug_${report.id}\")\n        dir.mkdirs()\n"
+        "        File(dir, \"source.cpp\").writeText(report.sourceCode)\n"
+        "        File(dir, \"report.md\").writeText(\"id: ${report.id}\\ntimestamp: ${report.timestamp}\\ncategory: ${report.category}\\nerror: ${report.errorMessage}\")\n"
+        "    }\n\n"
+        "    fun summary(): Map<BugCategory, Int> {\n"
+        "        val counts = mutableMapOf<BugCategory, Int>()\n"
+        "        for (cat in BugCategory.entries) counts[cat] = 0\n"
+        "        return counts\n    }\n}\n")
+
+
+def gen_diff_tester(design: dict[str, Any], output_dir: str) -> str:
     base = _pn(design)
-    content = f"""\
-plugins {{ id("java"); kotlin("jvm"); application; kotlin("plugin.serialization") version "2.4.0" }}
-group = "com.fuzzforge"; version = "1.0-SNAPSHOT"
-repositories {{ mavenCentral() }}
-kotlin {{ jvmToolchain(17) }}
-dependencies {{
-    implementation(kotlin("stdlib"))
-    implementation(project(":tree"))
-    implementation("org.yaml:snakeyaml:2.0")
-    implementation("com.github.ajalt.clikt:clikt-jvm:4.2.2")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
-    implementation("io.github.oshai:kotlin-logging-jvm:7.0.3")
-    implementation("ch.qos.logback:logback-classic:1.5.18")
-}}
-application {{ mainClass = "com.fuzzforge.cli.AppKt" }}
-sourceSets.main {{ kotlin.srcDir("src/main/kotlin") }}
-tasks.test {{ useJUnitPlatform() }}
-"""
-    path = Path(output_dir) / "build.gradle.kts"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content)
-    return str(path)
+    return _write(
+        Path(output_dir) / "src" / "main" / "kotlin" / "com" / "fuzzforge" / "diff" / "DiffTester.kt",
+        f"package com.fuzzforge.diff\n\nimport com.fuzzforge.ir.UirProgram\nimport com.fuzzforge.translator.FuzzForgeTranslator\n"
+        f"import com.fuzzforge.runner.RunResult\nimport kotlinx.coroutines.*\n\n"
+        f"enum class DiffMode {{\n    CROSS_TARGET, OPTIMIZE_VS_UNOPTIMIZED, CROSS_COMPILER\n}}\n\n"
+        f"data class DiffResult(\n    val program: UirProgram,\n    val sourceCode: String,\n    val resultA: RunResult,\n    val resultB: RunResult,\n    val match: Boolean,\n    val mode: DiffMode,\n)\n\n"
+        f"class {base}DiffTester(\n    private val translator: FuzzForgeTranslator<String>,\n) {{\n"
+        f"    suspend fun testSingle(program: UirProgram, mode: DiffMode): DiffResult {{\n"
+        f"        val code = translator.translate(program)\n"
+        f"        val rA = RunResult(success = true, stdout = code, stderr = \"\", exitCode = 0, durationMs = 0)\n"
+        f"        val rB = RunResult(success = true, stdout = code, stderr = \"\", exitCode = 0, durationMs = 0)\n"
+        f"        return DiffResult(program, code, rA, rB, rA.stdout == rB.stdout, mode)\n    }}\n\n"
+        f"    suspend fun testBatch(programs: List<UirProgram>, mode: DiffMode): List<DiffResult> = coroutineScope {{\n"
+        f"        programs.map {{ testSingle(it, mode) }}.filter {{ !it.match }}\n    }}\n}}\n")
 
 
 def generate_business_code(design: dict[str, Any], output_dir: str) -> list[str]:
-    """Generate all business code files. Returns list of generated file paths."""
     paths = []
     paths.append(gen_generator_config(design, output_dir))
     paths.append(gen_run_config(output_dir))
@@ -274,11 +189,10 @@ def generate_business_code(design: dict[str, Any], output_dir: str) -> list[str]
     paths.append(gen_runner(design, output_dir))
     paths.append(gen_app(design, output_dir))
     paths.append(gen_root_build(design, output_dir))
+    paths.append(gen_reducer(output_dir))
+    paths.append(gen_bug_collector(output_dir))
+    paths.append(gen_diff_tester(design, output_dir))
 
-    # .gitignore
     (Path(output_dir) / ".gitignore").write_text(".gradle/\nbuild/\nout/\ngen/\n")
-
-    # README
     (Path(output_dir) / "README.md").write_text(f"# {design.get('project_name', 'fuzzer')}\n\nFuzzer generated by FuzzForge.\n")
-
     return paths
