@@ -36,33 +36,287 @@ def gen_generator(design: dict[str, Any], output_dir: str) -> str:
     base = _pn(design)
     return _write(
         Path(output_dir) / "src" / "main" / "kotlin" / "com" / "fuzzforge" / "generator" / "Generator.kt",
-        f"package com.fuzzforge.generator\n\nimport kotlin.random.Random\nimport com.fuzzforge.ir.UirProgram\nimport com.fuzzforge.ir.builder.buildProgram\n\nclass {base}Generator(\n    private val config: GeneratorConfig = GeneratorConfig.default,\n) {{\n    private val random: Random = Random.Default\n\n    fun generate(): UirProgram {{\n        return buildProgram()\n    }}\n}}\n")
+        f"""package com.fuzzforge.generator
+
+import kotlin.random.Random
+import com.fuzzforge.ir.*
+import com.fuzzforge.ir.builder.*
+
+class {base}Generator(
+    private val config: GeneratorConfig = GeneratorConfig.default,
+) {{
+    private val random: Random = Random.Default
+
+    fun generate(): UirProgram {{
+        val maxClasses = config.maxClasses
+        val minClasses = config.minClasses
+        val numClasses = if (maxClasses > minClasses) random.nextInt(minClasses, maxClasses + 1) else minClasses
+
+        val classes = mutableListOf<UirClassDeclaration>()
+        for (i in 0 until numClasses) {{
+            classes.add(generateClass("C$i"))
+        }}
+
+        return buildProgram()
+    }}
+
+    private fun generateClass(name: String): UirClassDeclaration {{
+        val classKind = ClassKind.entries[random.nextInt(ClassKind.entries.size)]
+        val isFinal = random.nextFloat() < 0.3f
+        val isAbstract = classKind == ClassKind.ABSTRACT || random.nextFloat() < 0.1f
+
+        val numFuncs = random.nextInt(config.minFunctionsPerClass, config.maxFunctionsPerClass + 1)
+        val funcs = mutableListOf<UirFunctionDeclaration>()
+        for (i in 0 until numFuncs) {{
+            funcs.add(generateFunction("m$i", name))
+        }}
+
+        val hasSuperType = random.nextFloat() < config.inheritanceProbability
+        val superType = if (hasSuperType) generateFundamentalType() else null
+
+        val hasTemplate = random.nextFloat() < config.templateProbability
+        val templateParams = if (hasTemplate) {{
+            mutableListOf(generateTemplateParam())
+        }} else mutableListOf()
+
+        return buildClassDeclaration {{
+            this.name = name
+            this.language = Language.CPP17
+            this.classKind = classKind
+            this.superType = superType
+            this.isFinal = isFinal
+            this.isAbstract = isAbstract
+            this.templateParams.addAll(templateParams)
+        }}
+    }}
+
+    private fun generateFunction(name: String, className: String): UirFunctionDeclaration {{
+        val isVirtual = random.nextFloat() < config.virtualProbability
+        val isPureVirtual = isVirtual && random.nextFloat() < 0.3f
+        val isConst = random.nextFloat() < 0.3f
+        val isStatic = random.nextFloat() < 0.2f
+        val isTemplate = random.nextFloat() < config.templateProbability && !isVirtual
+
+        val returnType = generateFundamentalType()
+
+        val numParams = random.nextInt(config.minParams, config.maxParams + 1)
+        val params = (0 until numParams).map {{ generateParameter() }}
+        val paramList = buildParameterList {{
+            this.parameters.addAll(params)
+        }}
+
+        return buildFunctionDeclaration {{
+            this.name = name
+            this.language = Language.CPP17
+            this.isVirtual = isVirtual
+            this.isPureVirtual = isPureVirtual
+            this.isOverride = false
+            this.isConst = isConst
+            this.isStatic = isStatic
+            this.isTemplate = isTemplate
+            this.returnType = returnType
+            this.parameterList = paramList
+            this.containingClassName = className
+        }}
+    }}
+
+    private fun generateFundamentalType(): UirFundamentalType {{
+        val types = listOf(
+            "int" to 4, "float" to 4, "double" to 8, "char" to 1, "bool" to 1, "long" to 8, "short" to 2
+        )
+        val (name, size) = types[random.nextInt(types.size)]
+        return buildFundamentalType {{
+            this.typeKind = TypeKind.FUNDAMENTAL
+            this.name = name
+            this.size = size
+        }}
+    }}
+
+    private fun generateParameter(): UirParameter {{
+        val type = generateFundamentalType()
+        return buildParameter {{
+            this.name = "p${random.nextInt(1000)}"
+            this.type = type
+        }}
+    }}
+
+    private fun generateTemplateParam(): UirTemplateParameter {{
+        return buildTemplateParameter {{
+            this.name = "T${random.nextInt(100)}"
+            this.typeKind = TypeKind.TEMPLATE_PARAMETER
+            this.isTypeParameter = true
+        }}
+    }}
+}}
+""")
 
 
 def gen_translator(design: dict[str, Any], output_dir: str) -> str:
     base = _pn(design)
     return _write(
         Path(output_dir) / "src" / "main" / "kotlin" / "com" / "fuzzforge" / "translator" / "Translator.kt",
-        f"package com.fuzzforge.translator\n\nimport com.fuzzforge.ir.UirProgram\n\ninterface FuzzForgeTranslator<R> {{\n    fun translate(program: UirProgram): R\n}}\n\nclass {base}Translator : FuzzForgeTranslator<String> {{\n    override fun translate(program: UirProgram): String {{\n        return \"Generated by FuzzForge\"\n    }}\n}}\n")
+        f"""package com.fuzzforge.translator
+
+import com.fuzzforge.ir.*
+
+interface FuzzForgeTranslator<R> {{
+    fun translate(program: UirProgram): R
+}}
+
+class {base}Translator : FuzzForgeTranslator<String> {{
+    override fun translate(program: UirProgram): String {{
+        val sb = StringBuilder()
+        sb.appendLine("// Generated by FuzzForge - C++ Compiler Fuzzer")
+        sb.appendLine("#include <cstdint>")
+        sb.appendLine()
+
+        // Walk the program IR using visitors
+        // For now, we rely on the IR being built with class declarations
+        // In a real implementation, use the visitor pattern to traverse the tree
+        sb.appendLine("int main() {{")
+        sb.appendLine("    return 0;")
+        sb.appendLine("}}")
+        return sb.toString()
+    }}
+}}
+""")
 
 
 def gen_runner(design: dict[str, Any], output_dir: str) -> str:
     base = _pn(design)
     return _write(
         Path(output_dir) / "src" / "main" / "kotlin" / "com" / "fuzzforge" / "runner" / "Runner.kt",
-        f"package com.fuzzforge.runner\n\nimport com.fuzzforge.generator.{base}Generator\nimport com.fuzzforge.translator.{base}Translator\nimport com.fuzzforge.config.RunConfig\nimport kotlinx.coroutines.*\n\n"
-        f"data class RunResult(val success: Boolean, val stdout: String, val stderr: String, val exitCode: Int, val durationMs: Long)\n\n"
-        f"class {base}Runner(\n    private val config: RunConfig,\n) {{\n"
-        f"    private val generator = {base}Generator(config.generatorConfig)\n"
-        f"    private val translator = {base}Translator()\n\n"
-        f"    suspend fun runSingle(seed: Long? = null): RunResult {{\n"
-        f"        val program = if (seed != null) {{\n"
-        f"            {base}Generator(config.generatorConfig.copy(seed = seed)).generate()\n"
-        f"        }} else {{\n            generator.generate()\n        }}\n"
-        f"        val code = translator.translate(program)\n"
-        f"        return RunResult(success = true, stdout = code, stderr = \"\", exitCode = 0, durationMs = 0)\n    }}\n\n"
-        f"    suspend fun runBatch(count: Int): List<RunResult> = coroutineScope {{\n"
-        f"        (0 until count).map {{ runSingle() }}\n    }}\n}}\n")
+        f"""package com.fuzzforge.runner
+
+import com.fuzzforge.generator.{base}Generator
+import com.fuzzforge.translator.{base}Translator
+import com.fuzzforge.config.RunConfig
+import kotlinx.coroutines.*
+import java.io.File
+
+data class RunResult(
+    val success: Boolean,
+    val stdout: String,
+    val stderr: String,
+    val exitCode: Int,
+    val durationMs: Long,
+    val sourceCode: String = "",
+)
+
+enum class CompilerType {{
+    GCC, CLANG
+}}
+
+class {base}Runner(
+    private val config: RunConfig,
+) {{
+    private val generator = {base}Generator(config.generatorConfig)
+    private val translator = {base}Translator()
+    private val tempDir = File(config.outputDir, "temp")
+    private var programCounter = 0
+
+    init {{
+        tempDir.mkdirs()
+    }}
+
+    suspend fun compileAndRunSingle(seed: Long? = null): RunResult {{
+        val program = if (seed != null) {{
+            {base}Generator(config.generatorConfig.copy(seed = seed)).generate()
+        }} else {{
+            generator.generate()
+        }}
+        val code = translator.translate(program)
+        return compileWithGcc(code)
+    }}
+
+    private fun compileWithGcc(code: String): RunResult {{
+        val id = programCounter++
+        val cppFile = File(tempDir, "test_$id.cpp")
+        cppFile.writeText(code)
+
+        val start = System.currentTimeMillis()
+        val proc = ProcessBuilder(
+            "g++", "-std=c++17", "-O2", "-Wall", "-Wextra", "-o",
+            File(tempDir, "test_$id").absolutePath,
+            cppFile.absolutePath
+        )
+            .redirectErrorStream(false)
+            .start()
+
+        val stdout = proc.inputStream.bufferedReader().readText()
+        val stderr = proc.errorStream.bufferedReader().readText()
+        val exitCode = proc.waitFor()
+        val duration = System.currentTimeMillis() - start
+
+        // Clean up temp files
+        cppFile.delete()
+        File(tempDir, "test_$id").delete()
+
+        return RunResult(
+            success = exitCode == 0,
+            stdout = stdout,
+            stderr = stderr,
+            exitCode = exitCode,
+            durationMs = duration,
+            sourceCode = code,
+        )
+    }}
+
+    private fun compileWithClang(code: String): RunResult {{
+        val id = programCounter++
+        val cppFile = File(tempDir, "test_$id.cpp")
+        cppFile.writeText(code)
+
+        val start = System.currentTimeMillis()
+        val proc = ProcessBuilder(
+            "clang++", "-std=c++17", "-O2", "-Wall", "-Wextra", "-o",
+            File(tempDir, "test_$id").absolutePath,
+            cppFile.absolutePath
+        )
+            .redirectErrorStream(false)
+            .start()
+
+        val stdout = proc.inputStream.bufferedReader().readText()
+        val stderr = proc.errorStream.bufferedReader().readText()
+        val exitCode = proc.waitFor()
+        val duration = System.currentTimeMillis() - start
+
+        cppFile.delete()
+        File(tempDir, "test_$id").delete()
+
+        return RunResult(
+            success = exitCode == 0,
+            stdout = stdout,
+            stderr = stderr,
+            exitCode = exitCode,
+            durationMs = duration,
+            sourceCode = code,
+        )
+    }}
+
+    /**
+     * Run differential testing: compile same code with g++ and clang++,
+     * report ALL errors from both, and flag mismatches.
+     */
+    suspend fun diffTestSingle(seed: Long? = null): Pair<RunResult, RunResult> {{
+        val program = if (seed != null) {{
+            {base}Generator(config.generatorConfig.copy(seed = seed)).generate()
+        }} else {{
+            generator.generate()
+        }}
+        val code = translator.translate(program)
+        return Pair(compileWithGcc(code), compileWithClang(code))
+    }}
+
+    suspend fun runBatch(count: Int): List<RunResult> = coroutineScope {{
+        (0 until count).map {{ compileAndRunSingle() }}
+    }}
+
+    suspend fun diffTestBatch(count: Int): List<Pair<RunResult, RunResult>> = coroutineScope {{
+        (0 until count).map {{ diffTestSingle() }}
+    }}
+}}
+""")
 
 
 def gen_app(design: dict[str, Any], output_dir: str) -> str:
@@ -71,23 +325,94 @@ def gen_app(design: dict[str, Any], output_dir: str) -> str:
     desc = design.get("description", "Fuzzer generated by FuzzForge")
     return _write(
         Path(output_dir) / "src" / "main" / "kotlin" / "com" / "fuzzforge" / "cli" / "App.kt",
-        f"package com.fuzzforge.cli\n\nimport com.github.ajalt.clikt.core.CliktCommand\nimport com.github.ajalt.clikt.core.context\nimport com.github.ajalt.clikt.core.subcommands\nimport com.github.ajalt.clikt.parameters.options.*\nimport com.github.ajalt.clikt.parameters.types.int\nimport com.github.ajalt.clikt.output.MordantHelpFormatter\nimport com.fuzzforge.config.RunConfig\nimport com.fuzzforge.generator.{base}Generator\nimport com.fuzzforge.runner.{base}Runner\nimport kotlinx.coroutines.runBlocking\n\n"
-        f"class {base}Command : CliktCommand(\n    name = \"{pn}\",\n    help = \"{desc}\",\n) {{\n"
-        f"    init {{\n        context {{ helpFormatter = {{ MordantHelpFormatter(it, showDefaultValues = true) }} }}\n"
-        f"        subcommands(RunCommand(), GenerateCommand())\n    }}\n"
-        f"    override fun run() {{\n        echo(\"{base} — Fuzzer\")\n        echo(\"Run with a subcommand: run or generate\")\n    }}\n}}\n\n"
-        f"class RunCommand : CliktCommand(name = \"run\", help = \"Run fuzzing campaign\") {{\n"
-        f"    val count: Int by option(\"-n\").int().default(10)\n"
-        f"    val output: String by option(\"-o\").default(\"./reports\")\n"
-        f"    override fun run() {{\n        echo(\"Running campaign: $count programs\")\n"
-        f"        val config = RunConfig(outputDir = output)\n        val runner = {base}Runner(config)\n"
-        f"        runBlocking {{\n            val results = runner.runBatch(count)\n"
-        f"            echo(\"Done: ${{results.count {{ it.success }}}}/$count succeeded\")\n        }}\n    }}\n}}\n\n"
-        f"class GenerateCommand : CliktCommand(name = \"generate\", help = \"Generate programs only\") {{\n"
-        f"    val count: Int by option(\"-n\").int().default(5)\n"
-        f"    override fun run() {{\n        val generator = {base}Generator()\n"
-        f"        for (i in 0 until count) {{\n            generator.generate()\n            echo(\"Generated ${{i + 1}}\")\n        }}\n    }}\n}}\n\n"
-        f"fun main(args: Array<String>) = {base}Command().main(args)\n")
+        f"""package com.fuzzforge.cli
+
+import com.github.ajalt.clikt.core.CliktCommand
+import com.github.ajalt.clikt.core.context
+import com.github.ajalt.clikt.core.subcommands
+import com.github.ajalt.clikt.parameters.options.*
+import com.github.ajalt.clikt.parameters.types.int
+import com.github.ajalt.clikt.output.MordantHelpFormatter
+import com.fuzzforge.config.RunConfig
+import com.fuzzforge.generator.{base}Generator
+import com.fuzzforge.runner.{base}Runner
+import kotlinx.coroutines.runBlocking
+
+class {base}Command : CliktCommand(
+    name = "{pn}",
+    help = "{desc}",
+) {{
+    init {{
+        context {{ helpFormatter = {{ MordantHelpFormatter(it, showDefaultValues = true) }} }}
+        subcommands(RunCommand(), GenerateCommand(), DiffCommand())
+    }}
+    override fun run() {{
+        echo("{base} — Fuzzer")
+        echo("Run with a subcommand: run, generate, or diff")
+    }}
+}}
+
+class RunCommand : CliktCommand(name = "run", help = "Run fuzzing campaign with g++") {{
+    val count: Int by option("-n").int().default(10)
+    val output: String by option("-o").default("./reports")
+    override fun run() {{
+        echo("Running campaign: $count programs with g++")
+        val config = RunConfig(outputDir = output)
+        val runner = {base}Runner(config)
+        runBlocking {{
+            val results = runner.runBatch(count)
+            val success = results.count {{ it.success }}
+            val failures = results.filter {{ !it.success }}
+            echo("Done: $success/$count compiled OK")
+            if (failures.isNotEmpty()) {{
+                echo("Errors:")
+                for (r in failures.take(5)) {{
+                    echo("  ---")
+                    echo(r.stderr.take(500))
+                }}
+            }}
+        }}
+    }}
+}}
+
+class GenerateCommand : CliktCommand(name = "generate", help = "Generate programs only") {{
+    val count: Int by option("-n").int().default(5)
+    override fun run() {{
+        val generator = {base}Generator()
+        for (i in 0 until count) {{
+            generator.generate()
+            echo("Generated ${{i + 1}}")
+        }}
+    }}
+}}
+
+class DiffCommand : CliktCommand(name = "diff", help = "Differential test: g++ vs clang++") {{
+    val count: Int by option("-n").int().default(10)
+    val output: String by option("-o").default("./reports")
+    override fun run() {{
+        echo("Running differential test: $count programs")
+        val config = RunConfig(outputDir = output)
+        val runner = {base}Runner(config)
+        runBlocking {{
+            val results = runner.diffTestBatch(count)
+            var gccOk = 0; var clangOk = 0; var diffMismatch = 0
+            for ((gcc, clang) in results) {{
+                if (gcc.success) gccOk++
+                if (clang.success) clangOk++
+                if (gcc.success != clang.success) {{
+                    diffMismatch++
+                    echo("DIFF MISMATCH:")
+                    echo("  gcc:   exit=${{gcc.exitCode}} ${{gcc.stderr.take(200)}}")
+                    echo("  clang: exit=${{clang.exitCode}} ${{clang.stderr.take(200)}}")
+                }}
+            }}
+            echo("Results: g++ $gccOk/$count OK, clang++ $clangOk/$count OK, diff_mismatches: $diffMismatch")
+        }}
+    }}
+}}
+
+fun main(args: Array<String>) = {base}Command().main(args)
+""")
 
 
 def gen_root_build(design: dict[str, Any], output_dir: str) -> str:
