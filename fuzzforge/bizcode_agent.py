@@ -135,14 +135,14 @@ class {base}Generator(
     private fun generateParameter(): UirParameter {{
         val type = generateFundamentalType()
         return buildParameter {{
-            this.name = "p${random.nextInt(1000)}"
+            this.name = "p${{random.nextInt(1000)}}"
             this.type = type
         }}
     }}
 
     private fun generateTemplateParam(): UirTemplateParameter {{
         return buildTemplateParameter {{
-            this.name = "T${random.nextInt(100)}"
+            this.name = "T${{random.nextInt(100)}}"
             this.typeKind = TypeKind.TEMPLATE_PARAMETER
             this.isTypeParameter = true
         }}
