@@ -323,7 +323,7 @@ class {base}Runner(
 
         val start = System.currentTimeMillis()
         val proc = ProcessBuilder(
-            compiler, "-std=c++17", "-O2", "-w", "-o",
+            compiler, "-std=c++17", "-O2", "-c", "-o",
             File(tempDir, "test_$id").absolutePath,
             cppFile.absolutePath
         ).redirectErrorStream(false).start()
