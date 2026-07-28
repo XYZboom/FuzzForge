@@ -212,7 +212,7 @@ class CppGenVisitor : UirDefaultVisitor<Unit, StringBuilder>() {{
                 is UirFundamentalType -> (p.type as UirFundamentalType).name
                 else -> "int"
             }}
-            "$ptype ${p.name}"
+            "$ptype ${{p.name}}"
         }}
         val virtual = if (fd.isVirtual) "virtual " else ""
         val pure = if (fd.isPureVirtual) " = 0" else ""
