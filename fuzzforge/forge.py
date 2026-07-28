@@ -114,7 +114,7 @@ class FuzzForge:
 
         return {"status": "generated", "output_dir": self.output_dir, "design": self.design}
 
-    def _run_cpp_validation_loop(self, max_iterations: int = 3) -> dict[str, Any]:
+    def _run_cpp_validation_loop(self, max_iterations: int = 5) -> dict[str, Any]:
         """Two-phase C++ validation: syntax first, then semantics.
 
         Phase 1 — Syntax: Fix Translator.kt until 100% of programs have valid C++ syntax.
