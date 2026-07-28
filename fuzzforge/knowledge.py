@@ -477,6 +477,14 @@ CLASS_DECLARATION_KNOWLEDGE: dict[str, Any] = {
             "C++: unions cannot have virtual functions.",
             "C++: pure virtual functions (= 0) make the class abstract.",
         ],
+        "available_builders": [
+            "buildProgram { }", "buildClassContainer { }", "buildFuncContainer { }",
+            "buildClassDeclaration { }", "buildFunctionDeclaration { }",
+            "buildFundamentalType { }", "buildPointerType { }", "buildReferenceType { }",
+            "buildParameter { }", "buildParameterList { }",
+            "buildTemplateParameter { }", "buildBlock { }", "buildExpression { }",
+            "buildIfStmt { }", "buildForStmt { }", "buildReturnStmt { }",
+        ],
     },
     "validator_pattern": {
         "strategy": (
