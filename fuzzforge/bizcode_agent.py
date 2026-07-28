@@ -190,27 +190,31 @@ class CppGenVisitor : UirDefaultVisitor<Unit, StringBuilder>() {{
     }}
 
     override fun visitClassDeclaration(cd: UirClassDeclaration, data: StringBuilder) {{
-        if (cd.templateParams.isNotEmpty()) {{
-            val params = cd.templateParams.joinToString(", ") {{ it.name }}
-            data.appendLine("template<$params>")
-        }}
-        val kind = if (cd.classKind == ClassKind.UNION) "union" else "class"
-        data.append("$kind ${{cd.name}}")
-        if (cd.superType != null) {{
-            val superName = when (cd.superType) {{
-                is UirFundamentalType -> (cd.superType as UirFundamentalType).name
-                else -> "int"
+            if (cd.templateParams.isNotEmpty()) {{
+                val params = cd.templateParams.joinToString(", ") {{ "typename " + it.name }}
+                data.appendLine("template<$params>")
             }}
-            data.append(" : public $superName")
+            val kind = if (cd.classKind == ClassKind.UNION) "union" else "class"
+            data.append("$kind ${{cd.name}}")
+            if (cd.superType != null) {{
+                val superName = when (cd.superType) {{
+                    is UirFundamentalType -> (cd.superType as UirFundamentalType).name
+                    else -> "Base"
+                }}
+                // Only allow inheritance from class types, not fundamental types
+                val allowedSuperTypes = listOf("Base", "Interface", "AbstractBase", "Object")
+                if (superName in allowedSuperTypes) {{
+                    data.append(" : public $superName")
+                }}
+            }}
+            data.appendLine(" {{")
+            data.appendLine("public:")
+            data.appendLine("    virtual ~${{cd.name}}() = default;")
+            // Visit functions
+            cd.functionContainer?.let {{ fc -> visitFuncContainer(fc, data) }}
+            data.appendLine("}};")
+            data.appendLine()
         }}
-        data.appendLine(" {{")
-        data.appendLine("public:")
-        data.appendLine("    virtual ~${{cd.name}}() = default;")
-        // Visit functions
-        cd.functionContainer?.let {{ fc -> visitFuncContainer(fc, data) }}
-        data.appendLine("}};")
-        data.appendLine()
-    }}
 
     override fun visitFuncContainer(container: UirFuncContainer, data: StringBuilder) {{
         for (fn in container.functions) {{
